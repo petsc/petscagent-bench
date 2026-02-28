@@ -25,42 +25,7 @@ High-level flow:
 
 ## Architecture
 
-```mermaid
-flowchart LR
-    subgraph Input
-        P["📋 Problem<br/>JSON (data/*.json)"]
-    end
-
-    subgraph Agents
-        Purple["🟣 Purple Agent<br/>Code Generator<br/>Returns code files + metadata:<br/>`main_file`, `dependencies`, `cli_args`"]
-        Green["🟢 Green Agent<br/>Evaluator<br/>Packages files & forwards to MCP"]
-    end
-
-    subgraph Execution
-        MCP["⚙️ MCP Server<br/>Compile & Run<br/>(updates Makefile/build recipe)"]
-    end
-
-    subgraph Artifacts
-        A["🧾 Artifacts<br/>compile stdout/stderr, run stdout/stderr, exit code"]
-    end
-
-    subgraph Evaluation
-        E["📊 Evaluate<br/>Gates → Metrics → Quality"]
-    end
-
-    subgraph Output
-        R["📁 Report<br/>Score + Tier"]
-    end
-
-    P --> Green
-    Green -->|"A2A: request code"| Purple
-    Purple -->|"PETSc Code + metadata"| Green
-    Green -->|"Package files; specify `main_file` & deps"| MCP
-    MCP -->|"Compile/Run → Artifacts"| A
-    A -->|"Results & logs"| Green
-    Green --> E
-    E --> R
-```
+![petscagent-bench workflow](assets/workflow_dia.png)
 
 The system consists of three components:
 
