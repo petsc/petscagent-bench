@@ -37,7 +37,7 @@ import dotenv
 
 dotenv.load_dotenv()
 
-import mcpdynamicclient
+import petscmcp
 from petsc_compile_run_mcp_client import PetscCompileRunMCPClient
 
 # Import evaluation system
@@ -230,12 +230,17 @@ class Agent:
             br.compile_stdout = await self.mcp_client.make(executable=pname, dependencies=dep_list)
             br.compile_stderr = self.mcp_client.response.stderr
             br.compiles = True
-        except mcpdynamicclient.MCPDynamicClientReturnCode as e:
+        except petscmcp.MCPDynamicClientReturnCode as e:
             br.compile_stdout = e.stdout
             br.compile_stderr = e.stderr
             br.compiles = False
             br.runs = False
             raise
+        except petscmcp.MCPDynamicClientException as e:
+            br.compile_stdout = ''
+            br.compile_stderr = 'Error condition in accessing MCP server'
+            br.compiles = False
+            br.runs = False
 
     async def _run_executable(self, br: BenchmarkResult, pname: str, cli_args: str) -> None:
         """Run the compiled executable.
@@ -248,11 +253,16 @@ class Agent:
             br.stdout = await self.mcp_client.run_executable(executable=pname, args=cli_args)
             br.stderr = ""
             br.runs = True
-        except mcpdynamicclient.MCPDynamicClientReturnCode as e:
+        except petscmcp.MCPDynamicClientReturnCode as e:
             br.stdout = e.stdout
             br.stderr = e.stderr
             br.runs = False
             raise
+        except petscmcp.MCPDynamicClientException as e:
+            br.compile_stdout = ''
+            br.compile_stderr = 'Error condition in accessing MCP server'
+            br.compiles = False
+            br.runs = False
 
     async def run(self, message: Message, updater: TaskUpdater) -> None:
         """Green agent implementation - manages assessment and evaluation.

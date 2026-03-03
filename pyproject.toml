@@ -13,7 +13,7 @@ dependencies = [
     "pathlib>=1.0.1",
     "typer>=0.19.2",
     "uvicorn>=0.37.0",
-    "petsc-mcp-servers-clients @ git+https://gitlab.com/petsc/petsc_mcp_servers.git@main",
+    "petsc-mcp-servers-clients @ git+https://gitlab.com/petsc/petsc_mcp_servers.git@add-claude-code-generator-server",
     "loguru>=0.7.3",
     "numpy>=2.4.1",
 ]
