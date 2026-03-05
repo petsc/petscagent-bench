@@ -106,6 +106,7 @@ class BenchmarkResult:
     stdout: Optional[str] = None
     stderr: Optional[str] = None
     cli_args: Optional[str] = None
+    execution_time_sec: Optional[float] = None  # Code execution time only
     # Compilation fields
     compile_stdout: Optional[str] = None
     compile_stderr: Optional[str] = None
@@ -250,7 +251,9 @@ class Agent:
             cli_args: Command line arguments for execution
         """
         try:
+            t0 = time.time()
             br.stdout = await self.mcp_client.run_executable(executable=pname, args=cli_args)
+            br.execution_time_sec = time.time() - t0
             br.stderr = ""
             br.runs = True
         except petscmcp.MCPDynamicClientReturnCode as e:
@@ -466,7 +469,7 @@ class Agent:
                 'runs': benchmark_result.runs,
                 'stdout': benchmark_result.stdout or '',
                 'stderr': benchmark_result.stderr or '',
-                'execution_time_sec': benchmark_result.time_used_sec,
+                'execution_time_sec': benchmark_result.execution_time_sec or benchmark_result.time_used_sec,
                 'memory_mb': None,  # TODO: Add memory tracking if available
             }
             # Run evaluation pipeline

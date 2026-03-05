@@ -31,12 +31,11 @@ evaluation:
 scoring:
   # Category weights (must sum to 1.0)
   weights:
-    correctness: 0.35   # Numerical accuracy, semantic correctness
+    correctness: 0.35   # Numerical accuracy
     performance: 0.15   # Execution time
-    code_quality: 0.15  # Readability, style, documentation, modularity
+    code_quality: 0.15  # Readability, style, documentation
     algorithm: 0.15     # Algorithm choice, solver, discretization
-    petsc: 0.10         # PETSc best practices, error handling, etc.
-    semantic: 0.10      # BCs, ICs, physics preservation
+    petsc: 0.20         # PETSc best practices, error handling, parallel awareness
   
   # Tier thresholds (0-100 scale)
   tiers:
@@ -64,8 +63,8 @@ numerical_accuracy:
   error_threshold: 1.0e-3
 
 execution_time:
-  excellent_time_sec: 1.0
-  good_time_sec: 5.0
-  acceptable_time_sec: 15.0
-  max_time_sec: 60.0
+  excellent_time_sec: 0.5
+  good_time_sec: 1.0
+  acceptable_time_sec: 2.0
+  max_time_sec: 4.0
   max_slowdown_factor: 2.0

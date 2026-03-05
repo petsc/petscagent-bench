@@ -27,8 +27,7 @@ class MetricsAggregator:
             'performance': weights_config.get('performance', 0.15),
             'code_quality': weights_config.get('code_quality', 0.15),
             'algorithm': weights_config.get('algorithm', 0.15),
-            'petsc': weights_config.get('petsc', 0.10),
-            'semantic': weights_config.get('semantic', 0.10),
+            'petsc': weights_config.get('petsc', 0.20),
         }
         
         # Load tier thresholds from config or use defaults
@@ -141,7 +140,6 @@ class MetricsAggregator:
             'code_quality': [],
             'algorithm': [],
             'petsc': [],
-            'semantic': [],
         }
         
         for result in results:

@@ -11,6 +11,6 @@
 #   api_base_url: "https://api.asksage.anl.gov/server/v1"
 #   query available models: curl --cacert <path_to_ssl_pem_file> https://api.asksage.anl.gov/server/v1/models | jq -r '.data[].id'
 llm:
-  model: "openai/gpt52"
+  model: "openai/gemini25pro"
   api_base_url: "https://apps-dev.inside.anl.gov/argoapi/v1" # Set to null if not using a custom API base URL
   temperature: 0 # Set to 0 only for reproducibility
