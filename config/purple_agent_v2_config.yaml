@@ -1,0 +1,83 @@
+# Purple Agent v2 — self-verifying PETSc code generator.
+#
+# Extends the baseline purple agent with an inner verification loop:
+#  - After the LLM emits {codes, nsize, cli_args}, v2 uploads the files to
+#    the PETSc compile-run MCP server, compiles them, and (optionally) does
+#    a smoke run. On failure it feeds stderr back into the LLM and retries
+#    up to `max_self_fix_iters` times before returning to the Green Agent.
+#
+# Configure the LLM the same way as purple_agent_config.yaml (LiteLLM
+# provider/model name). Argo / AskSage proxy notes carry over unchanged.
+
+llm:
+  model: "openai/claudeopus47"
+  api_base_url: "https://apps-dev.inside.anl.gov/argoapi/v1"   # Argo proxy (matches v1 setup)
+  temperature: 0       # Set to 0 only for reproducibility
+
+# Where to reach the petsc_compile_run MCP server.
+# launcher.py spawns it on http://localhost:8080 by default.
+# Falls back to the MCP_SERVER_URL environment variable if null.
+mcp:
+  server_url: "http://localhost:8080/mcp"
+
+# Inner self-verification loop knobs.
+self_fix:
+  max_iters: 5        # Maximum LLM regeneration attempts after a compile/run failure
+  do_smoke_run: true  # Also try `run_executable` after a successful compile
+  smoke_run_timeout_sec: 20
+  # Oracle-free correctness signal: inject PETSc's own diagnostic flags during the
+  # smoke run and parse the output for solver divergence, NaN/Inf, unused options,
+  # and PETSc error blocks. A hit feeds a targeted fix-it message back to the LLM
+  # without needing any ground-truth answer — so it helps real-user prompts too,
+  # not just bench problems.
+  check_diagnostics: true
+  diagnostic_flags:
+    - "-ksp_converged_reason"
+    - "-snes_converged_reason"
+    - "-ts_monitor"
+    # NOTE: -options_left was tried and dropped — it false-fired on programs
+    # that pass a flag only one of several solver objects consumes, and the
+    # resulting fix-it pressure made the LLM corrupt working code. Robertson
+    # went BRONZE→FAIL and Rosenbrock went GOLD→SILVER with it enabled.
+
+# Retrieval-augmented generation over the PETSc tutorial corpus.
+# Run `python -m petsc_rag.build_index` once to populate src/petsc_rag/index/.
+# Toggle this to A/B v2 with retrieval on vs. off.
+rag:
+  enabled: true   # Flip to true after building the index
+  k: 4             # Number of tutorials to inject into the system prompt
+  rerank: true     # Two-stage: vector retrieve k_initial, then cross-encoder rerank to k
+  k_initial: 12    # Candidate pool size before reranking (ignored if rerank=false)
+
+header_lookup:
+  enabled: true
+  limit: 8
+
+# Plan-then-code (two-call architecture).
+#   Turn 1: a "numerical analysis specialist" prompt emits a structured
+#     NumericalPlan (problem_class, discretization, solver_stack, key_petsc_apis,
+#     verification_strategy, rationale) from the user's problem description.
+#     key_petsc_apis is validated against the installed PETSc header index
+#     (the same headers.py the reactive header_lookup uses) and the canonical
+#     signatures are injected into the code-gen prompt — proactively, not on
+#     compile failure.
+#   Turn 2 (per self-fix attempt): a code-generation prompt writes C against
+#     the locked plan; the existing self-verify loop runs unchanged.
+#   On repeated failures of the same kind, if allow_plan_revision=true the
+#     plan is re-generated once with failure history attached and subsequent
+#     attempts code against the revised plan.
+#   When emit_to_green=true the plan is appended to the A2A TextPart Green
+#     parses (after the existing self_verify_* lines) so LLM-judge evaluators
+#     can read the rationale instead of inferring it from the C.
+#   Toggle enabled to false for legacy single-call behavior. Default off so
+#   in-flight A/Bs that only flip other knobs (e.g. header_lookup) are unaffected.
+plan:
+  enabled: true
+  allow_plan_revision: true
+  emit_to_green: true
+  # num_plans=1 reproduces the legacy single-plan path. >1 enables multi-plan
+  # + judge: generates that many candidate plans (each with a different angle
+  # directive: simplest / accurate / robust) and picks one via a judge LLM.
+  # All calls run at temperature=0 so the output is reproducible per user per
+  # problem. Max value clamped to the number of variant prompts (currently 3).
+  num_plans: 3

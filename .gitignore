@@ -1,0 +1,82 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+.pytest_cache/
+*.egg-info/
+
+# Environment / secrets — NEVER commit
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Local AI assistant context (not for public consumption)
+CLAUDE.md
+
+# Benchmark outputs (regenerable, big, noisy)
+output/
+output_*/
+*_results.run*/
+*_results.trial*/
+*_results.claude_run*/
+*_results.failed*/
+feature_sweep_results.*/
+diag_ab_results.*/
+rag_ab_results.*/
+plan_ab_results.*/
+multiplan_ab_results.*/
+selfverify_ab_results.*/
+baseline_alloff_results.*/
+header_ab_darcy_results.*/
+shipped_n*_results.*/
+ragon_n*_results.*/
+all_on_results.*/
+all_on_gpt54_results.*/
+v1_baseline_results.*/
+v1_claudeopus_results.*/
+fuelrod2d_3x3/
+fullsuite_3x3/
+*_3x3/
+*_3x3_*/
+*_retry/
+
+# Log files at repo root
+main-*.stdout
+main-*.stderr
+*.driver.log
+*.progress.log
+*.launch.log
+*.log
+
+# Backup files from A/B scripts crashing
+config/*.bak.*
+
+# Stale baseline RAG index (byte-identical to index/, not referenced by any code)
+src/petsc_rag/index.baseline/
+
+# Purple agent v1 cache
+purple_agent_cache/
+
+# GPU-only data (excluded from default suite)
+gpu_data/
+
+# Stale duplicate of data/archive/ — kept locally, not shared
+data_archive/
+
+# Generated cross-eval results
+blind_cross_eval_results.json
+
+# macOS junk
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Editor junk
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
