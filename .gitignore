@@ -1,0 +1,22 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Diagnostic dumps of failed LLM replies
+failed_responses/
+
+# Secrets
+.env
+
+# Benchmark results and run logs
+output/
+grid_logs*/
+*.stdout
+*.stderr
