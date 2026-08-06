@@ -134,6 +134,10 @@ Purple agent's AgentBeats ID is
 <purple_id>
 {purple_id}
 </purple_id>
+Purple agent's LLM model is
+<purple_model>
+{purple_model}
+</purple_model>
     """
     print("Task description:")
     print(task_text)

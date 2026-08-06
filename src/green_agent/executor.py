@@ -44,11 +44,12 @@ class GreenAgentExecutor(AgentExecutor):
         mcp_server_url = tags["mcp_server_url"]
         green_id = tags["green_id"]
         purple_id = tags["purple_id"]
+        purple_model = tags.get("purple_model", "")
         # create a new task
         task = new_task(context.message)
         await event_queue.enqueue_event(task)
         context_id = task.context_id
-        agent = Agent(config=self.config, purple_agent_url=purple_agent_url, mcp_server_url=mcp_server_url, green_id=green_id, purple_id=purple_id)
+        agent = Agent(config=self.config, purple_agent_url=purple_agent_url, mcp_server_url=mcp_server_url, green_id=green_id, purple_id=purple_id, purple_model=purple_model)
         # for debugging
         # max_num_prob = 1
         # agent = Agent(purple_agent_url=purple_agent_url, mcp_server_url=mcp_server_url, max_num_prob=max_num_prob)
