@@ -177,6 +177,7 @@ class EvaluationPipeline:
                 'llm_model': self.model,
                 'llm_api_base_url': self.api_base_url,
                 'llm_temperature': self._get_llm_config('temperature', 0.3),
+                'llm_max_tokens': self._get_llm_config('max_tokens', None),
                 'max_concurrent_calls': self._get_llm_config('max_concurrent_calls', 3),
             }
             

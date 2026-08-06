@@ -150,6 +150,7 @@ class PetscAgentExecutor(AgentExecutor):
         self.model = self.llm_config.get("model")
         self.temperature = float(self.llm_config.get("temperature"))
         self.api_base_url = self.llm_config.get("api_base_url")
+        self.max_tokens = self.llm_config.get("max_tokens")
 
         # Track conversation history per context for multi-turn interactions
         self.ctx_id_to_messages = {}
@@ -211,29 +212,63 @@ class PetscAgentExecutor(AgentExecutor):
                 'response_format': ProblemResponse,
                 'timeout': 300,
             }
+            if self.max_tokens:
+                completion_kwargs['max_tokens'] = int(self.max_tokens)
             litellm.ssl_verify = False
             if self.api_base_url:
                 completion_kwargs['api_base'] = self.api_base_url
                 is_asksage_endpoint = self.api_base_url.startswith('https://api.asksage.anl.gov')
+                is_argo_endpoint = 'inside.anl.gov/argoapi' in self.api_base_url
                 if is_asksage_endpoint:
                     litellm.ssl_verify = os.environ["ASKSAGE_SSL_CERT_FILE"]
                     completion_kwargs['api_key'] = os.environ["ASKSAGE_API_KEY"]
+                elif is_argo_endpoint:
+                    # Argo authenticates with the caller's ANL domain username
+                    completion_kwargs['api_key'] = os.environ["ARGO_API_KEY"]
             response = completion(**completion_kwargs)
+            # Log how much of the token budget was actually used, so the
+            # configured max_tokens can be tuned against real measurements.
+            try:
+                used = response.usage.completion_tokens
+                print(f"@@@ Purple agent: completion_tokens={used} (max_tokens={completion_kwargs.get('max_tokens')})")
+            except Exception:
+                pass
             # Extract the generated content from LLM response
             content = response.choices[0].message.content
+            # logger.info(f"Raw LLM response (first 500 chars): {repr(content[:500]) if isinstance(content, str) else type(content)}")
             if isinstance(content, str):
                 # Remove markdown code block wrapper that some LLMs such as Claude add
                 # This ensures we get clean JSON for parsing
                 if content.startswith("```"):
                     content = content.split("```", 2)[1]
                     content = content.lstrip("json").strip()
+                    # logger.info(f"After stripping markdown (first 500 chars): {repr(content[:500])}")
                 data = json.loads(content)
             else:
                 raise TypeError(f"Expected string content from response, got {type(content)}")
             # Parse the JSON response
             nsize = data["nsize"]
             cli_args = data["cli_args"]
-            parts_list = [TextPart(text=f"Code generation successful ✅\nnsize: {nsize}\ncli_args: {cli_args}\n")]
+            # Report token usage so the evaluator can record generation cost.
+            # Appended after cli_args to keep the existing response format intact.
+            usage_line = ""
+            try:
+                u = response.usage
+                # cached_tokens is reported in different places by different
+                # providers, so check both and fall back to 0.
+                cached = getattr(u, "cache_read_input_tokens", None)
+                if cached is None:
+                    details = getattr(u, "prompt_tokens_details", None)
+                    cached = getattr(details, "cached_tokens", None) if details else None
+                usage_line = (
+                    f"prompt_tokens: {u.prompt_tokens}\n"
+                    f"completion_tokens: {u.completion_tokens}\n"
+                    f"total_tokens: {getattr(u, 'total_tokens', u.prompt_tokens + u.completion_tokens)}\n"
+                    f"cached_tokens: {cached or 0}\n"
+                )
+            except Exception:
+                pass
+            parts_list = [TextPart(text=f"Code generation successful ✅\nnsize: {nsize}\ncli_args: {cli_args}\n{usage_line}")]
             for entry in data["codes"]:
                 # Create file object with code content
                 fwb = FileWithBytes(
@@ -248,12 +283,65 @@ class PetscAgentExecutor(AgentExecutor):
             )
         except Exception as e:
             # Handle any errors during code generation
-            print(f"@@@ Purple agent: ❌ Task failed with agent error: {e}")
+            # import traceback
+            # logger.error(f"Task failed: {e}\n{traceback.format_exc()}")
+            print(f"@@@ Purple agent: ❌ Task failed with agent error: {type(e).__name__}: {e}")
+            # Dump the raw LLM reply so parse failures are diagnosable. Without
+            # this the content is lost and truncated, empty, or oddly wrapped
+            # responses are indistinguishable from each other.
+            self._dump_failed_response(locals().get("response"), locals().get("content"), e)
             # Return error message to the client
             parts_list = [TextPart(text=f"Code generation failed ❌\nerror: {e}\n")]
             await event_queue.enqueue_event(
                 new_agent_parts_message(parts_list, context_id=context.context_id)
             )
+
+    def _dump_failed_response(self, response, content, exc):
+        """Record a failed LLM reply so the cause can be diagnosed.
+
+        Prints a short summary and writes the full raw reply to
+        ``failed_responses/``. The finish reason distinguishes the common
+        causes: ``length`` means the reply was truncated by the token limit,
+        while a complete reply that still fails to parse points at unexpected
+        formatting.
+        """
+        try:
+            finish_reason = None
+            usage = None
+            if response is not None:
+                try:
+                    finish_reason = response.choices[0].finish_reason
+                    usage = getattr(response, "usage", None)
+                except Exception:
+                    pass
+
+            print(f"@@@ Purple agent: finish_reason={finish_reason!r} usage={usage}")
+            if content is None:
+                print("@@@ Purple agent: no content was returned by the model")
+            else:
+                text = content if isinstance(content, str) else repr(content)
+                print(f"@@@ Purple agent: raw reply is {len(text)} chars")
+                print(f"@@@ Purple agent: head: {text[:300]!r}")
+                print(f"@@@ Purple agent: tail: {text[-300:]!r}")
+                if finish_reason == "length":
+                    print("@@@ Purple agent: reply was TRUNCATED by the token limit")
+
+            dump_dir = Path("failed_responses")
+            dump_dir.mkdir(exist_ok=True)
+            existing = len(list(dump_dir.glob("*.json")))
+            path = dump_dir / f"failure-{existing + 1:03d}.json"
+            path.write_text(json.dumps({
+                "model": self.model,
+                "api_base_url": self.api_base_url,
+                "error": f"{type(exc).__name__}: {exc}",
+                "finish_reason": finish_reason,
+                "usage": str(usage) if usage is not None else None,
+                "content": content if isinstance(content, str) else repr(content),
+            }, indent=2))
+            print(f"@@@ Purple agent: wrote raw reply to {path}")
+        except Exception as dump_err:
+            # Diagnostics must never mask the original failure
+            print(f"@@@ Purple agent: could not dump failed response: {dump_err}")
 
     async def cancel(self, context, event_queue) -> None:
         """Cancel a running task (not implemented).

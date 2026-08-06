@@ -31,7 +31,8 @@ class AlgorithmAppropriatenessQuality(Evaluator):
         llm_model = config.get('llm_model', 'gpt-4o-mini') if config else 'gpt-4o-mini'
         llm_temp = config.get('llm_temperature', 0.3) if config else 0.3
         llm_api_base_url = config.get('llm_api_base_url') if config else None
-        self.llm = LLMClient(model=llm_model, temperature=llm_temp, api_base_url=llm_api_base_url)
+        llm_max_tokens = config.get('llm_max_tokens') if config else None
+        self.llm = LLMClient(model=llm_model, temperature=llm_temp, api_base_url=llm_api_base_url, max_tokens=llm_max_tokens)
     
     @property
     def name(self) -> str:
