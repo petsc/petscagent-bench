@@ -105,9 +105,15 @@ Each problem is evaluated across multiple dimensions (see `config/green_agent_co
 
 ### Files written to disk
 
-The Green Agent writes a single file to `output/`:
+The Green Agent writes one file per run to `output/`, named after the model under test and the judge used to score it:
 
-- `output/benchmark_summary.json`: overall summary + per-problem results
+- `output/<model>-judge-<judge>-run<N>.json`, for example
+  `output/claudeopus46-judge-gpt52-run1.json`
+
+The run index is incremented automatically, so repeated runs of the same
+model/judge pair do not overwrite each other. Each file contains the overall
+summary, per-problem results, and the provenance of the run (`purple_model`,
+`judge_model`, `run_index`) along with per-problem token counts.
 
 ### Task artifacts
 
@@ -165,6 +171,9 @@ uv sync
 # LLM API Keys
 GEMINI_API_KEY="<your_gemini_key>"
 OPENAI_API_KEY="<your_openai_key>"
+
+# Argo (ANL) authenticates with your ANL domain username
+ARGO_API_KEY="<your_anl_username>"
 
 # PETSc Configuration (required for compilation/execution)
 PETSC_DIR="<path_to_petsc_installation>"
@@ -229,6 +238,7 @@ evaluation:
     model: "openai/gpt52"            # LLM for quality evaluation
     api_base_url: "https://apps-dev.inside.anl.gov/argoapi/v1"  # Optional API base URL (e.g., Argo/AskSage)
     temperature: 0                    # Set to 0 only for reproducibility
+    max_tokens: 32000                 # Pin the completion limit (see note below)
     max_concurrent_calls: 3           # Rate limiting for LLM calls
 
 scoring:
@@ -253,12 +263,16 @@ llm:
   model: "openai/claudeopus45"     # LLM for code generation
   api_base_url: "https://apps-dev.inside.anl.gov/argoapi/v1"  # Optional API base URL (e.g., Argo/AskSage)
   temperature: 0                    # Set to 0 only for reproducibility
+  max_tokens: 32000                 # Pin the completion limit (see note below)
 ```
 
 **Note**:
 - Use a LiteLLM-style name, e.g. `<provider_name>/<model_name>`. For models provided with an OpenAI-compatible endpoint, use `openai` as the provider name.
 - Leave `api_base_url` `null` to use each provider’s default (e.g. `https://api.openai.com/v1`). Set this to use a custom or proxy endpoint (e.g. `https://apps-dev.inside.anl.gov/argoapi/v1` for Argo). For OpenAI-compatible APIs the URL should end with `/v1`; the client will use the appropriate LiteLLM provider prefix.
 - The system auto-detects AskSage endpoints when `api_base_url` starts with `https://api.asksage.anl.gov` and configures SSL and API keys accordingly.
+- Argo endpoints (`*.inside.anl.gov/argoapi`) authenticate with your ANL domain username, read from `ARGO_API_KEY`.
+- **Pin `max_tokens`.** Serving endpoints may default to a low completion limit (4096 has been observed), which silently truncates long solutions. A truncated reply fails to parse and scores zero, and the failure looks like a generation error rather than a configuration problem. The hardest benchmark problems need 5k--18k completion tokens, so 32000 leaves adequate headroom. When a generation does fail, the purple agent writes the raw reply to `failed_responses/` for inspection.
+- Some endpoints reject large `max_tokens` on their non-streaming path. On Argo, Claude models accept 32000 only on the Anthropic-native base URL (`.../argoapi`, no `/v1` suffix); the OpenAI-compatible path caps near 20000.
 
 
 ## Development
@@ -316,4 +330,4 @@ The Green Agent can cache Purple Agent responses (pickled per problem) to speed 
    - Confirm the Green and Purple URLs/ports match your deployment.
    - If agents are slow to start, you may need to increase timeouts in `src/util/a2a_comm.py`.
 5. **Port conflicts**: Modify ports in `src/launcher.py` if defaults are in use (Green `9001`, Purple `9002`, MCP `8080`).
-6. **Missing output files**: Only `output/benchmark_summary.json` is written to disk by default; other reports are emitted as task artifacts.
+6. **Missing output files**: Only the per-run `output/<model>-judge-<judge>-run<N>.json` file is written to disk by default; other reports are emitted as task artifacts.
