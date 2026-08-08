@@ -45,6 +45,11 @@ from src.evaluators import EvaluationPipeline
 from src.metrics import MetricsAggregator
 
 
+def _slug(name):
+    """Filename-safe short form of a model identifier."""
+    return re.sub(r"[^a-z0-9]+", "", (name or "unknown").lower().split("/")[-1])
+
+
 def read_from_json(path):
     """Read all test problems from JSONL files in a directory.
 
@@ -166,7 +171,10 @@ class Agent:
         """
         # Sanitize problem name for filename (replace non-alphanumeric with _)
         safe_name = re.sub(r'[^\w\-_]', '_', problem_name)
-        return self.cache_dir / f"{safe_name}.pkl"
+        # Key on the model under test as well: rescoring one fixed set of
+        # submissions under a different judge must reuse that model's cache,
+        # and different models must not overwrite each other.
+        return self.cache_dir / f"{_slug(self.purple_model)}-{safe_name}.pkl"
 
     def _load_cached_response(self, problem_name: str) -> Optional[Any]:
         """Load cached purple agent response if it exists."""
@@ -450,9 +458,6 @@ class Agent:
         # model under test and the judge that scored it.
         output_dir = Path("output")
         output_dir.mkdir(exist_ok=True)
-
-        def _slug(name):
-            return re.sub(r"[^a-z0-9]+", "", (name or "unknown").lower().split("/")[-1])
 
         model_slug = _slug(self.purple_model)
         judge_slug = _slug(self.model)

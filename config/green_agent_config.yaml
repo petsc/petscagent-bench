@@ -4,6 +4,11 @@ evaluation:
   enable_gates: true
   enable_metrics: true
   enable_quality: true
+
+  # Reuse cached purple-agent submissions instead of regenerating them.
+  # Set true to rescore one fixed set of submissions under a different judge,
+  # which isolates judge effect from generation variability.
+  use_cached_submissions: false
   
   # LLM settings for quality evaluators
   #
