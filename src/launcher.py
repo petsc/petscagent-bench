@@ -26,6 +26,20 @@ dotenv.load_dotenv()
 from petsc_compile_run_mcp_server import main as start_mcp_server
 
 
+async def wait_port_open(host, port, timeout=60.0, interval=0.5):
+    """Poll until a TCP port accepts connections, or the timeout elapses."""
+    deadline = asyncio.get_event_loop().time() + timeout
+    while asyncio.get_event_loop().time() < deadline:
+        try:
+            _, writer = await asyncio.open_connection(host, port)
+            writer.close()
+            await writer.wait_closed()
+            return True
+        except (ConnectionRefusedError, OSError):
+            await asyncio.sleep(interval)
+    return False
+
+
 def run_green_agent(agent_llm, api_base_url=None):
     """Execute the Green Agent in a separate process.
     
@@ -113,6 +127,12 @@ async def launch_evaluation():
     print("Launching MCP server for green agent...")
     petsc_mcp_server = multiprocessing.Process(target=start_mcp_server)
     petsc_mcp_server.start()
+    # Wait for the port to accept connections. Without this the first compile
+    # can reach the server before it is listening and fail with a connection
+    # error, which is then recorded as a gate failure. Previously this was
+    # masked by the time the purple agent spent generating code, so it only
+    # surfaced when submissions were served from cache.
+    assert await wait_port_open("localhost", 8080), "MCP server not ready in time"
     print("PETSc MCP server is ready.")
 
     # Step 4: Send evaluation task to Green Agent
