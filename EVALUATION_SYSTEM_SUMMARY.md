@@ -397,7 +397,7 @@ PER-PROBLEM RESULTS
    Correctness: 75.0, Performance: 65.0, Code Quality: 60.0
 ```
 
-### JSON output (`output/benchmark_summary.json`)
+### JSON output (`output/<model>-judge-<judge>-run<N>.json`)
 
 The Green Agent writes a JSON file with this top-level structure:
 
@@ -639,12 +639,12 @@ config/
 
 ```
 output/
-└── benchmark_summary.json
+└── <model>-judge-<judge>-run<N>.json
 ```
 
 **Emitted as task artifacts** (via `TaskUpdater.add_artifact`):
 
-- `benchmark_summary.json`
+- `<model>-judge-<judge>-run<N>.json`
 - `evaluation_report.txt`
 - `evaluation_detailed_report.json`
 - `benchmark_result_<problem_name>.json`
@@ -661,5 +661,5 @@ purple_agent_cache/
 - ✅ Implemented with 14 evaluators (when all phases are enabled)
 - ✅ Integrated into the Green Agent benchmarking pipeline
 - ✅ Configurable via `config/green_agent_config.yaml`
-- ✅ Emits summary results to disk (`output/benchmark_summary.json`) and additional reports as task artifacts
+- ✅ Emits summary results to disk (`output/<model>-judge-<judge>-run<N>.json`) and additional reports as task artifacts
 - ✅ Supports caching of Purple Agent responses (`purple_agent_cache/`)
