@@ -47,7 +47,19 @@ class PETScBestPracticesQuality(Evaluator):
     
     @property
     def evaluation_method(self) -> str:
-        return f"llm_{self.llm.model}"
+        return f"llm_{self.llm.model}+patterns"
+
+    @staticmethod
+    def _pattern_score(code: str) -> tuple[float, list[str]]:
+        patterns = {
+            "modern error propagation": "PetscCall(" in code or "PetscCallMPI(" in code,
+            "runtime solver options": "SetFromOptions(" in code,
+            "PETSc viewer/output": "VecView(" in code or "MatView(" in code or "PetscViewer" in code,
+            "resource cleanup": "Destroy(" in code,
+            "PETSc finalization": "PetscFinalize(" in code,
+        }
+        followed = [name for name, present in patterns.items() if present]
+        return len(followed) / len(patterns), followed
     
     async def evaluate(
         self,
@@ -62,7 +74,7 @@ class PETScBestPracticesQuality(Evaluator):
 
 Code:
 ```c
-{code[:2000]}
+{code}
 ```
 
 Check for PETSc best practices:
@@ -89,11 +101,13 @@ Return as JSON.
                 prompt=prompt,
                 response_model=BestPracticesResponse
             )
+            pattern_score, detected_patterns = self._pattern_score(code)
+            combined_score = 0.8 * (response.score / 10.0) + 0.2 * pattern_score
             return EvaluationResult(
                 evaluator_name=self.name,
                 evaluator_type=self.evaluator_type,
-                passed=response.score >= 7.0,
-                quality_score=response.score / 10.0,
+                passed=combined_score >= 0.7,
+                quality_score=combined_score,
                 confidence=response.confidence,
                 feedback=response.feedback,
                 metadata={
@@ -102,6 +116,9 @@ Return as JSON.
                     'uses_viewers': response.uses_viewers,
                     'configurable': response.configurable,
                     'practices_followed': response.practices_followed,
+                    'llm_score': response.score / 10.0,
+                    'pattern_score': pattern_score,
+                    'detected_patterns': detected_patterns,
                 },
                 evaluation_method=self.evaluation_method,
                 execution_time_ms=(time.time() - start_time) * 1000

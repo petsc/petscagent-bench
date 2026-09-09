@@ -74,3 +74,6 @@ execution_time:
   acceptable_time_sec: 2.0
   max_time_sec: 4.0
   max_slowdown_factor: 2.0
+
+execution:
+  max_nsize: 64

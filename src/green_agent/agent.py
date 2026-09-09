@@ -20,6 +20,7 @@ import json
 import time
 import re
 import pickle
+import hashlib
 from a2a.server.tasks import TaskUpdater
 from a2a.types import (
     Message,
@@ -111,7 +112,11 @@ class BenchmarkResult:
     stdout: Optional[str] = None
     stderr: Optional[str] = None
     cli_args: Optional[str] = None
+    requested_nsize: Optional[int] = None
+    actual_nsize: Optional[int] = None
     execution_time_sec: Optional[float] = None  # Code execution time only
+    valgrind_output: Optional[str] = None
+    generated_sources: Optional[List[Dict[str, str]]] = None
     # Token cost of the purple agent's code-generation call (metadata only,
     # not part of any score). prompt=input, completion=output, cached=prompt
     # tokens served from cache (0 when caching is not in use).
@@ -200,13 +205,13 @@ class Agent:
         except Exception as e:
             print(f"@@@ Green agent: ❌ Failed to save cache for {problem_name}: {e}")
 
-    async def _create_files_on_server(self, pname: str, file_list: List[Any], generated_codes: List[bytes]) -> str:
+    async def _create_files_on_server(self, pname: str, file_list: List[Any], generated_sources: List[Dict[str, str]]) -> str:
         """Upload generated files to MCP server.
 
         Args:
             pname: Project name prefix for generated files
             file_list: List of file parts from purple agent response
-            generated_codes: List to append generated code bytes to
+            generated_sources: List to append source records to
 
         Raises:
             RuntimeError: If file creation fails
@@ -215,10 +220,16 @@ class Agent:
         String of dependency file names separated by spaces
         """
         dep_list = []
+        used_names = set()
         for f in file_list:
-            generated_codes.append(f.bytes)
-            parts = f.name.split('.')
+            source = f.bytes.decode("utf-8") if isinstance(f.bytes, bytes) else str(f.bytes)
+            original_name = f.name
+            safe_name = Path(original_name).name
+            if not safe_name or safe_name in {".", ".."}:
+                raise ValueError(f"Invalid generated filename: {original_name!r}")
+            parts = safe_name.split('.')
             ext = parts[-1]
+            f.name = safe_name
             # Use a base name to avoid overwriting multiple files of the same type
             if ext == "c":
                 f.name = f"{pname}.c"
@@ -228,8 +239,17 @@ class Agent:
             if ext == "cpp" and len(parts) > 2 and parts[-2] == "kokkos":
                 f.name = f"{pname}kok.kokkos.cpp"
                 dep_list.append(f.name)
+            if f.name in used_names:
+                raise ValueError(f"Duplicate generated filename after normalization: {f.name}")
+            used_names.add(f.name)
+            generated_sources.append({
+                "original_name": original_name,
+                "server_name": f.name,
+                "sha256": hashlib.sha256(source.encode("utf-8")).hexdigest(),
+                "source": source,
+            })
             created = await self.mcp_client.create_file_from_string(
-                filename=f.name, file_contents=str(f.bytes)
+                filename=f.name, file_contents=source
                 )
             if not created:
                 raise RuntimeError(
@@ -259,7 +279,7 @@ class Agent:
             br.compiles = False
             br.runs = False
 
-    async def _run_executable(self, br: BenchmarkResult, pname: str, cli_args: str) -> None:
+    async def _run_executable(self, br: BenchmarkResult, pname: str, nsize: int, cli_args: str) -> None:
         """Run the compiled executable.
         Args:
             br: BenchmarkResult to update with execution results
@@ -268,10 +288,29 @@ class Agent:
         """
         try:
             t0 = time.time()
-            br.stdout = await self.mcp_client.run_executable(executable=pname, args=cli_args)
+            br.stdout = await self.mcp_client.run_executable(
+                executable=pname, nsize=nsize, args=cli_args
+            )
             br.execution_time_sec = time.time() - t0
+            br.actual_nsize = nsize
             br.stderr = ""
             br.runs = True
+
+            if self.config.get("memory_safety", {}).get("use_valgrind", False):
+                try:
+                    await self.mcp_client.run_executable(
+                        executable=pname, nsize=nsize, args=cli_args, valgrind=True
+                    )
+                    br.valgrind_output = self.mcp_client.response.stderr
+                except petscmcp.MCPDynamicClientReturnCode as e:
+                    # Valgrind reports are useful even when the instrumented
+                    # process exits nonzero; the memory gate parses the text.
+                    br.valgrind_output = e.stderr
+                except petscmcp.MCPDynamicClientException:
+                    # Preserve the normal run. The memory gate will use its
+                    # documented stderr fallback when instrumentation is not
+                    # available on the server.
+                    br.valgrind_output = None
         except petscmcp.MCPDynamicClientReturnCode as e:
             br.stdout = e.stdout
             br.stderr = e.stderr
@@ -327,7 +366,7 @@ class Agent:
                 time_used_sec=0.0,
                 compiles=False,
             )
-            generated_codes = []
+            generated_sources = []
 
             try:
                 # Try to load from cache first
@@ -375,9 +414,16 @@ class Agent:
                     raise ValueError(
                         "Could not parse purple agent response. Probably failed to generate the code."
                     )
-                # nsize = m.group("nsize")
+                try:
+                    nsize = int(m.group("nsize").strip())
+                except ValueError as exc:
+                    raise ValueError("Purple agent nsize must be an integer") from exc
+                max_nsize = int(self.config.get("execution", {}).get("max_nsize", 64))
+                if not 1 <= nsize <= max_nsize:
+                    raise ValueError(f"Purple agent nsize must be between 1 and {max_nsize}")
                 cli_args = m.group("cli_args")
                 br.cli_args = cli_args
+                br.requested_nsize = nsize
                 # Token usage is optional, so that agents which do not report
                 # it still parse correctly.
                 tok = re.search(r"prompt_tokens:\s*(\d+)\s*\ncompletion_tokens:\s*(\d+)", text_list[0])
@@ -397,16 +443,17 @@ class Agent:
                     await self.mcp_client.initialize()
                     mcp_initialized = True
                 # Upload files to server
-                dep_list = await self._create_files_on_server(pname, file_list, generated_codes)
+                dep_list = await self._create_files_on_server(pname, file_list, generated_sources)
+                br.generated_sources = generated_sources
                 # Compile the code
                 await self._compile_code(br, pname, dep_list)
                 # Run the executable (only if compilation succeeded)
                 if br.compiles:
-                    await self._run_executable(br, pname, cli_args)
+                    await self._run_executable(br, pname, nsize, cli_args)
 
                 # Run evaluation system
                 print(f"@@@ Green agent: Evaluating generated code...")
-                await self._evaluate_code(br, data, generated_codes)
+                await self._evaluate_code(br, data, generated_sources)
                 # Update rolling summary
                 if br.runs:
                     summary["runs_count"] += 1
@@ -479,6 +526,23 @@ class Agent:
             "results": [asdict(r) for r in results],
         }
         local_path.write_text(json.dumps(json_data, indent=2))
+        source_dir = output_dir / "sources" / local_path.stem
+        source_dir.mkdir(parents=True, exist_ok=False)
+        source_manifest = []
+        for result in results:
+            problem_dir = source_dir / _slug(result.problem_name)
+            problem_dir.mkdir(exist_ok=True)
+            for source_record in result.generated_sources or []:
+                source_path = problem_dir / source_record["server_name"]
+                source_path.write_text(source_record["source"], encoding="utf-8")
+                source_manifest.append({
+                    "problem_name": result.problem_name,
+                    "filename": str(source_path.relative_to(source_dir)),
+                    "sha256": source_record["sha256"],
+                })
+        (source_dir / "manifest.json").write_text(
+            json.dumps(source_manifest, indent=2), encoding="utf-8"
+        )
         print(f"@@@ Green agent: Saved results to {local_path}")
         await updater.add_artifact(
             name=filename,
@@ -501,19 +565,23 @@ class Agent:
         self,
         benchmark_result: BenchmarkResult,
         problem_data: Dict[str, Any],
-        generated_codes: List[str],
+        generated_sources: List[Dict[str, str]],
     ) -> None:
         """Run evaluation pipeline on generated codes.
 
         Args:
             benchmark_result: BenchmarkResult to update with evaluation metrics
             problem_data: Original problem specification
-            generated_codes: The generated codes
+            generated_sources: Generated source records
         """
         try:
-            # Guard against empty generated_codes
-            if not generated_codes:
+            if not generated_sources:
                 raise ValueError("No generated code to evaluate")
+
+            code = "\n\n".join(
+                f"/* FILE: {item['server_name']} */\n{item['source']}"
+                for item in generated_sources
+            )
 
             # Prepare execution result for evaluators
             execution_result = {
@@ -523,10 +591,13 @@ class Agent:
                 'stderr': benchmark_result.stderr or '',
                 'execution_time_sec': benchmark_result.execution_time_sec or benchmark_result.time_used_sec,
                 'memory_mb': None,  # TODO: Add memory tracking if available
+                'valgrind_output': benchmark_result.valgrind_output,
+                'requested_nsize': benchmark_result.requested_nsize,
+                'actual_nsize': benchmark_result.actual_nsize,
             }
             # Run evaluation pipeline
             eval_results = await self.evaluation_pipeline.evaluate(
-                code=generated_codes[0],  # Focus on the main file for now
+                code=code,
                 problem=problem_data,
                 execution_result=execution_result
             )
@@ -649,6 +720,3 @@ class Agent:
             name="evaluation_detailed_report.json",
             parts=[TextPart(text=json.dumps(detailed_report, indent=2))],
         )
-
-
-

@@ -73,7 +73,7 @@ Problem:
 
 Generated Code:
 ```c
-{code[:2000]}  # Truncate if very long
+{code}
 ```
 
 Assess:

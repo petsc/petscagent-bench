@@ -45,7 +45,21 @@ class SolverChoiceQuality(Evaluator):
     
     @property
     def evaluation_method(self) -> str:
-        return f"llm_{self.llm.model}"
+        return f"llm_{self.llm.model}+heuristic"
+
+    @staticmethod
+    def _heuristic(code: str) -> Dict[str, Any]:
+        solver_families = [name for name in ("KSP", "SNES", "TS", "Tao") if f"{name}Create" in code]
+        configurable = any(token in code for token in (
+            "KSPSetFromOptions", "SNESSetFromOptions", "TSSetFromOptions",
+            "TaoSetFromOptions",
+        ))
+        score = min(1.0, 0.5 + 0.25 * bool(solver_families) + 0.25 * configurable)
+        return {
+            "score": score,
+            "solver_families": solver_families,
+            "runtime_configurable": configurable,
+        }
     
     async def evaluate(
         self,
@@ -74,7 +88,7 @@ Problem:
 
 Generated Code:
 ```c
-{code[:2000]}
+{code}
 ```
 
 Assess the solver selection:
@@ -100,11 +114,13 @@ Return as JSON.
                 prompt=prompt,
                 response_model=SolverChoiceResponse
             )
+            heuristic = self._heuristic(code)
+            combined_score = 0.8 * (response.score / 10.0) + 0.2 * heuristic["score"]
             return EvaluationResult(
                 evaluator_name=self.name,
                 evaluator_type=self.evaluator_type,
-                passed=response.score >= 7.0,
-                quality_score=response.score / 10.0,
+                passed=combined_score >= 0.7,
+                quality_score=combined_score,
                 confidence=response.confidence,
                 feedback=response.feedback,
                 metadata={
@@ -112,6 +128,10 @@ Return as JSON.
                     'solver_identified': response.solver_identified,
                     'appropriate_for_problem': response.appropriate_for_problem,
                     'suggestions': response.suggestions,
+                    'llm_score': response.score / 10.0,
+                    'heuristic_score': heuristic['score'],
+                    'heuristic_solver_families': heuristic['solver_families'],
+                    'heuristic_runtime_configurable': heuristic['runtime_configurable'],
                 },
                 evaluation_method=self.evaluation_method,
                 execution_time_ms=(time.time() - start_time) * 1000

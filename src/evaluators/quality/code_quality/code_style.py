@@ -48,7 +48,7 @@ class CodeStyleQuality(Evaluator):
     
     @property
     def evaluation_method(self) -> str:
-        return f"llm_{self.llm.model}" if self.use_llm else "static_analysis"
+        return f"llm_{self.llm.model}+static_analysis" if self.use_llm else "static_analysis"
     
     async def evaluate(
         self,
@@ -69,7 +69,19 @@ class CodeStyleQuality(Evaluator):
         start_time = time.time()
         
         if self.use_llm:
-            result = await self._evaluate_with_llm(code)
+            llm_result = await self._evaluate_with_llm(code)
+            static_result = self._evaluate_with_static_analysis(code)
+            result = {
+                'score': 0.8 * llm_result['score'] + 0.2 * static_result['score'],
+                'confidence': min(llm_result['confidence'], static_result['confidence']),
+                'feedback': llm_result['feedback'],
+                'metadata': {
+                    **llm_result.get('metadata', {}),
+                    'llm_score': llm_result['score'],
+                    'static_score': static_result['score'],
+                    'static_issues': static_result['metadata']['issues'],
+                },
+            }
         else:
             result = self._evaluate_with_static_analysis(code)
         
@@ -145,11 +157,14 @@ Return as JSON.
         else:
             issues.append("Missing PetscErrorCode return type")
         
-        # Check for proper error handling macro
-        if 'CHKERRQ' in code:
+        # Check for current or legacy PETSc error propagation.
+        if 'PetscCall(' in code or 'PetscCallMPI(' in code:
             score += 0.15
+        elif 'CHKERRQ(' in code:
+            score += 0.1
+            issues.append("Uses legacy CHKERRQ instead of PetscCall")
         else:
-            issues.append("Missing CHKERRQ error handling")
+            issues.append("Missing PetscCall/PetscCallMPI error handling")
         
         # Check for consistent indentation (spaces)
         lines = code.split('\n')

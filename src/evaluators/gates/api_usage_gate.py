@@ -1,5 +1,6 @@
 """API usage gate - checks basic PETSc API requirements."""
 
+import re
 import time
 from typing import Any, Dict, Optional
 
@@ -45,11 +46,24 @@ class APIUsageGate(Evaluator):
         """
         start_time = time.time()
         
-        # Check for required components
+        stripped = re.sub(r"/\*.*?\*/", "", code, flags=re.DOTALL)
+        stripped = re.sub(r"//[^\n]*", "", stripped)
+        init_match = re.search(r"\bPetscInitialize\s*\(", stripped)
+        finalize_match = re.search(r"\bPetscFinalize\s*\(", stripped)
+
         checks = {
-            'has_petsc_initialize': 'PetscInitialize' in code,
-            'has_petsc_finalize': 'PetscFinalize' in code,
-            'has_petsc_include': '#include' in code and 'petsc' in code.lower(),
+            'has_petsc_initialize': init_match is not None,
+            'has_petsc_finalize': finalize_match is not None,
+            'has_petsc_include': re.search(
+                r'^\s*#\s*include\s*[<"]petsc[^>"]*\.h[>"]',
+                stripped,
+                flags=re.MULTILINE | re.IGNORECASE,
+            ) is not None,
+            'initialization_precedes_finalization': (
+                init_match is not None
+                and finalize_match is not None
+                and init_match.start() < finalize_match.start()
+            ),
         }
         
         all_passed = all(checks.values())
