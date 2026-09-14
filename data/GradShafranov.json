@@ -1,0 +1,38 @@
+{
+  "problem_name": "GradShafranov2D_Solovev",
+  "problem_id": "7",
+  "problem_description": "Write a single, compilable C program that solves the tokamak Grad-Shafranov MHD equilibrium equation for a shaped, real-machine plasma using PETSc DMDA + SNES, and verifies itself with the method of manufactured solutions.\n\nPhysics (elliptic PDE, axisymmetric ideal-MHD force balance):\n  Delta^* psi = -mu0 R^2 dp/dpsi - F dF/dpsi,\nwhere psi(R,Z) is the poloidal magnetic flux, p(psi) the plasma pressure, F(psi) = R B_phi the poloidal current function, and\n  Delta^* psi = R d/dR( (1/R) dpsi/dR ) + d2psi/dZ2.\n\nWork entirely in NORMALIZED coordinates x = R/R0 and y = Z/R0 (x > 0), so the operator becomes\n  Delta^* psi = d2psi/dx2 - (1/x) dpsi/dx + d2psi/dy2.\nWith Solov'ev profiles (dp/dpsi and F dF/dpsi constant) the source reduces to the closed form\n  f(x,y) = (1 - A) x^2 + A,\nwhich admits the Cerfon-Freidberg analytic solution used below as the exact answer. This is a real-machine equilibrium (D-shape, optionally with an X-point) that is still a closed-form solution, so a manufactured-solution convergence test applies.\n\nSetup:\n- Domain: rectangular computational box x in [xmin, xmax], y in [ymin, ymax], read from the options -cf_xmin -cf_xmax -cf_ymin -cf_ymax (defaults xmin = 0.648, xmax = 1.352, ymin = -0.5984, ymax = 0.5984, i.e. an ITER-like case with R0 = 6.2 m, inverse aspect ratio eps = 0.32, elongation kappa = 1.7, triangularity delta = 0.33).\n- Grid: uniform structured grid, sizes from the DMDA runtime options -da_grid_x and -da_grid_y (default 65 x 65). Include the boundary points, so hx = (xmax - xmin)/(Nx - 1) and hy = (ymax - ymin)/(Ny - 1).\n- Boundary conditions: Dirichlet, psi = PsiExact(x,y) on all four edges. IMPORTANT: PsiExact is NONZERO on the box edges in general -- the plasma boundary psi = 0 is an interior contour, not the box -- so the Dirichlet values must be evaluated from PsiExact at each boundary node. Do NOT assume the boundary values are zero.\n\nManufactured exact solution (Cerfon-Freidberg, Phys. Plasmas 17, 032502 (2010)):\n  PsiExact(x,y) = psi_p + sum_{i=1..12} c[i-1] * psi_i,\nwhere, writing L = log(x), the particular solution is\n  psi_p = x^4/8 + A*((x^2/2)*L - x^4/8),\nand the 12 homogeneous basis functions (each satisfying Delta^* psi_i = 0) are:\n  psi_1  = 1\n  psi_2  = x^2\n  psi_3  = y^2 - x^2*L\n  psi_4  = x^4 - 4*x^2*y^2\n  psi_5  = 2*y^4 - 9*y^2*x^2 + 3*x^4*L - 12*x^2*y^2*L\n  psi_6  = x^6 - 12*x^4*y^2 + 8*x^2*y^4\n  psi_7  = 8*y^6 - 140*y^4*x^2 + 75*y^2*x^4 - 15*x^6*L + 180*x^4*y^2*L - 120*x^2*y^4*L\n  psi_8  = y\n  psi_9  = y*x^2\n  psi_10 = y^3 - 3*y*x^2*L\n  psi_11 = 3*y*x^4 - 4*y^3*x^2\n  psi_12 = 8*y^5 - 45*y*x^4 - 80*y^3*x^2*L + 60*y*x^4*L\nBecause Delta^* psi_p = (1 - A) x^2 + A and every psi_i is homogeneous, the exact forcing is exactly f(x,y) = (1 - A)*x^2 + A.\n\nParameters:\n- The Solov'ev scalar A is read from the option -cf_A (default -0.155).\n- The 12 coefficients c[0..11] are read as a PETSc real array from the option -cf_c via PetscOptionsGetRealArray, default (the ITER-like case)\n  c = {0.066650467803637523, -0.19549796060803781, -0.051105541336425253, -0.045967106142823171, 0.0055324133602574236, -0.0055311112278751311, -0.000148005558824326, 0, 0, 0, 0, 0}.\n  The last five coefficients are nonzero only for up-down asymmetric (single-null) configurations; a double-null X-point case is obtained with a different set of the first seven.\n\nRequirements:\n1) Discretization: create a PETSc DMDA (DM_BOUNDARY_NONE in both directions, DMDA_STENCIL_STAR, 1 degree of freedom, stencil width 1) and discretize Delta^* with standard 2nd-order central finite differences:\n     (psi[i+1][j] - 2*psi[i][j] + psi[i-1][j])/hx^2\n   - (1/x_i) * (psi[i+1][j] - psi[i-1][j])/(2*hx)\n   + (psi[i][j+1] - 2*psi[i][j] + psi[i][j-1])/hy^2.\n2) Solver: solve with SNES using SNESSetFunction and SNESSetJacobian. The residual is linear, so Newton converges in one step; assemble the true Jacobian rather than relying on a finite-difference approximation. Use a tight linear-solver tolerance (for example -ksp_rtol 1e-12) so that the reported error is discretization-limited and not solver-limited.\n3) Correctness: after solving, compute the maximum-norm error ||psi_h - PsiExact||_inf over all grid points. Refining the grid must show 2nd-order convergence (the observed order of accuracy p -> 2).\n4) Parallelism: the program must run correctly and give the same answer (to solver tolerance) on 1 or multiple MPI ranks.\n5) Style: use PetscCall() on every PETSc call, no %D format specifiers, self-contained single C file with no external dependencies beyond PETSc.\n\nImplementation:\n- main() must initialize PETSc, read the options above, create the DMDA and SNES, solve, report the error, and finalize PETSc.\n- Also support an option -psi_view to VecView() the numerical solution.\n\nOutput:\nAt the end of the output, print a single line containing only the maximum-norm error ||psi_h - PsiExact||_inf. The line must contain only the numeric value (no words, labels, or extra characters).",
+  "test_cases": [
+    {
+      "args": "-ksp_rtol 1e-12",
+      "expected_output": [
+        1.789352e-06
+      ]
+    },
+    {
+      "args": "-da_grid_x 129 -da_grid_y 129 -ksp_rtol 1e-12",
+      "expected_output": [
+        4.471086e-07
+      ]
+    },
+    {
+      "nsize": "4",
+      "args": "-da_grid_x 129 -da_grid_y 129 -ksp_rtol 1e-12",
+      "expected_output": [
+        4.471086e-07
+      ]
+    },
+    {
+      "args": "-cf_A -0.05 -cf_c 0.01345054287305128,-0.32652064658764612,0.0036973913170412704,-0.023449138073450806,0.00023178758646249259,-0.00043609700228301881,-4.3069906609274579e-06,0,0,0,0,0 -cf_xmin 0.142 -cf_xmax 1.858 -cf_ymin -1.716 -cf_ymax 1.716 -ksp_rtol 1e-12",
+      "expected_output": [
+        4.476834e-05
+      ]
+    },
+    {
+      "args": "-cf_A -0.155 -cf_c 0.10837664588627995,0.88960160205382266,-1.0385641313594354,-0.4398328131861074,0.78764165045565671,-0.73609241647527501,-0.030678503142252973,0,0,0,0,0 -cf_xmin 0.648 -cf_xmax 1.352 -cf_ymin -0.65824 -cf_ymax 0.65824 -ksp_rtol 1e-12",
+      "expected_output": [
+        2.001072e-05
+      ]
+    }
+  ]
+}
