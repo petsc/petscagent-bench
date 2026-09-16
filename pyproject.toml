@@ -5,9 +5,9 @@ description = "Agentified benchmark for PETSc coding agents"
 readme = "README.md"
 requires-python = ">=3.12,<3.14"
 dependencies = [
-    "a2a-sdk[http-server]>=0.3.8",
+    "a2a-sdk[http-server]>=0.3.8,<1.0",
     "dotenv>=0.9.9",
-    "fastmcp>=2.14.2",
+    "fastmcp>=2.14.2,<3.0",
     "litellm>=1.80.5",
     "openai>=2.8.1",
     "pathlib>=1.0.1",
