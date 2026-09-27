@@ -16,17 +16,8 @@ import uuid
 import re
 from typing import Dict
 
-from a2a.client import A2ACardResolver, A2AClient
-from a2a.types import (
-    AgentCard,
-    Part,
-    TextPart,
-    MessageSendParams,
-    Message,
-    Role,
-    SendMessageRequest,
-    SendMessageResponse,
-)
+from a2a.client import A2ACardResolver, ClientConfig, ClientFactory
+from src.util.a2a_v1 import AgentCard, Message, Role, SendMessageRequest, StreamResponse, new_text_part
 
 
 async def get_agent_card(url: str) -> AgentCard | None:
@@ -87,7 +78,7 @@ async def wait_agent_ready(url, timeout=10):
 
 async def send_message(
     url, message, task_id=None, context_id=None, on_request=None
-) -> SendMessageResponse:
+) -> StreamResponse:
     """Send a message to an A2A-compliant agent.
 
     This function handles the full A2A message protocol:
@@ -107,7 +98,7 @@ async def send_message(
             by the caller (default: None)
 
     Returns:
-        SendMessageResponse object containing the agent's response
+        Final StreamResponse containing the agent's response
 
     Raises:
         Exception: If the agent is unreachable or returns an error
@@ -120,29 +111,31 @@ async def send_message(
         resolver = A2ACardResolver(httpx_client=httpx_client, base_url=url)
         card = await resolver.get_agent_card()
 
-        client = A2AClient(httpx_client=httpx_client, agent_card=card)
+        client = ClientFactory(ClientConfig(
+            streaming=False, httpx_client=httpx_client
+        )).create(card)
 
         # Generate unique message ID for tracking
         message_id = uuid.uuid4().hex
 
         # Construct message parameters with user role
-        params = MessageSendParams(
+        req = SendMessageRequest(
             message=Message(
-                role=Role.user,
-                parts=[Part(TextPart(text=message))],
+                role=Role.ROLE_USER,
+                parts=[new_text_part(message)],
                 message_id=message_id,
-                task_id=task_id,
-                context_id=context_id,
-            )
+                task_id=task_id or "",
+                context_id=context_id or "",
+            ),
         )
-        # Create request with unique ID
-        request_id = uuid.uuid4().hex
-        req = SendMessageRequest(id=request_id, params=params)
         if on_request is not None:
             on_request(req)
 
-        # Send message and await response
-        response = await client.send_message(request=req)
+        response = None
+        async for event in client.send_message(request=req):
+            response = event
+        if response is None:
+            raise RuntimeError("Purple Agent returned no A2A response")
         return response
     finally:
         await httpx_client.aclose()

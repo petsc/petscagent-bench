@@ -1,6 +1,6 @@
 """Shared definition of the optional Purple Agent telemetry contract.
 
-Telemetry is carried in an A2A DataPart so that agents implemented with Claude
+Telemetry is carried in an A2A data Part so that agents implemented with Claude
 Code, LangGraph, or any other framework can expose the same optional contract
 without the Green Agent depending on that framework.
 

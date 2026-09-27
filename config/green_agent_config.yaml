@@ -35,6 +35,13 @@ evaluation:
 
 # Scoring configuration
 scoring:
+  # Purple Agent efficiency is reported separately and never changes the
+  # solution-quality composite score or tier. A successful live response at
+  # or below both budgets receives 100; exceeding a budget reduces the score.
+  efficiency:
+    time_budget_sec: 300
+    response_bytes_budget: 100000
+
   # Category weights (must sum to 1.0)
   weights:
     correctness: 0.35   # Numerical accuracy

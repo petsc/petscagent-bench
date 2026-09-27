@@ -3,25 +3,15 @@ from typing import Any, Dict
 from a2a.server.agent_execution import AgentExecutor, RequestContext
 from a2a.server.events import EventQueue
 from a2a.server.tasks import TaskUpdater
-from a2a.types import (
-    Task,
-    TaskState,
-    UnsupportedOperationError,
-    InvalidRequestError,
-)
-from a2a.utils.errors import ServerError
-from a2a.utils import (
-    new_agent_text_message,
-    new_task,
-)
+from src.util.a2a_v1 import TaskState, new_agent_text_message, new_task_from_user_message
 from src.util.a2a_comm import parse_tags
 from src.green_agent.agent import Agent
 
 TERMINAL_STATES = {
-    TaskState.completed,
-    TaskState.canceled,
-    TaskState.failed,
-    TaskState.rejected,
+    TaskState.TASK_STATE_COMPLETED,
+    TaskState.TASK_STATE_CANCELED,
+    TaskState.TASK_STATE_FAILED,
+    TaskState.TASK_STATE_REJECTED,
 }
 
 
@@ -46,7 +36,7 @@ class GreenAgentExecutor(AgentExecutor):
         purple_id = tags["purple_id"]
         purple_model = tags.get("purple_model", "")
         # create a new task
-        task = new_task(context.message)
+        task = new_task_from_user_message(context.message)
         await event_queue.enqueue_event(task)
         context_id = task.context_id
         use_cache = bool(
@@ -77,7 +67,6 @@ class GreenAgentExecutor(AgentExecutor):
             )
 
         print("@@@ Green agent: ✅ Code generation request complete.")
-        await event_queue.enqueue_event(new_agent_text_message(f"Finished. ✅\n"))
 
     async def cancel(self, context: RequestContext, event_queue: EventQueue) -> None:
         raise NotImplementedError

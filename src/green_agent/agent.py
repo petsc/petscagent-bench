@@ -19,20 +19,15 @@ import os
 import json
 import time
 import re
-import pickle
 import hashlib
 import math
 import numbers
 import statistics
 from a2a.server.tasks import TaskUpdater
-from a2a.types import (
-    DataPart,
-    Message,
-    TaskState,
-    TextPart,
-    SendMessageSuccessResponse,
+from src.util.a2a_v1 import (
+    Message, TaskState, StreamResponse, get_data, get_text_parts, get_file_parts,
+    new_agent_text_message, new_text_part, protobuf_size,
 )
-from a2a.utils import get_message_text, new_agent_text_message, get_text_parts, get_file_parts
 from src.util.a2a_comm import send_message
 from src.util.telemetry import (
     PURPLE_TELEMETRY_FIELDS,
@@ -58,15 +53,14 @@ from src.metrics import MetricsAggregator
 def _extract_purple_telemetry(parts: List[Any]) -> Optional[Dict[str, Any]]:
     """Return optional implementation-reported Purple Agent telemetry.
 
-    Telemetry is deliberately carried in an A2A DataPart so agents implemented
+    Telemetry is deliberately carried in an A2A data Part so agents implemented
     with Claude Code, LangGraph, or any other framework can expose the same
     optional contract without the Green Agent depending on that framework.
     """
     for part in parts:
-        value = getattr(part, "root", part)
-        if not isinstance(value, DataPart):
+        if not part.HasField("data"):
             continue
-        data = value.data
+        data = get_data(part)
         version = data.get("schema_version")
         if version != PURPLE_TELEMETRY_SCHEMA:
             # An agent that reports nothing and an agent whose schema has
@@ -76,7 +70,7 @@ def _extract_purple_telemetry(parts: List[Any]) -> Optional[Dict[str, Any]]:
                 and version.startswith("petscagent.telemetry.")
             ):
                 print(
-                    f"@@@ Green agent: ⚠️ Ignoring DataPart with telemetry schema "
+                    f"@@@ Green agent: ⚠️ Ignoring data Part with telemetry schema "
                     f"{version!r}; this benchmark reads {PURPLE_TELEMETRY_SCHEMA!r}"
                 )
             continue
@@ -105,20 +99,22 @@ def _extract_purple_telemetry(parts: List[Any]) -> Optional[Dict[str, Any]]:
 
 
 def _a2a_payload_bytes(payload: Any) -> int:
-    """Measure a serialized A2A payload using its Pydantic model.
+    """Measure a serialized A2A protobuf payload.
 
     Requests and responses both go through this one function so the reported
     request and response byte counts are directly comparable. Measuring must
     never fail a usable solution, so an unmeasurable payload reports 0.
     """
     try:
-        return len(payload.model_dump_json(by_alias=True).encode("utf-8"))
+        return protobuf_size(payload)
     except Exception as e:
         print(f"@@@ Green agent: ⚠️ Could not measure A2A payload size: {e}")
         return 0
 
 
-def _purple_efficiency_summary(results: List["BenchmarkResult"]) -> Dict[str, Any]:
+def _purple_efficiency_summary(
+    results: List["BenchmarkResult"], efficiency_config: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
     """Aggregate measured and optional agent-declared Purple efficiency.
 
     Cached cases are excluded from both halves. A cached response replays the
@@ -128,6 +124,8 @@ def _purple_efficiency_summary(results: List["BenchmarkResult"]) -> Dict[str, An
     live = [r for r in results if not r.purple_response_from_cache]
     times = [r.purple_wall_time_sec for r in live if r.purple_wall_time_sec is not None]
     reported = [r.purple_telemetry for r in live if r.purple_telemetry is not None]
+    scores = [r.efficiency_score for r in live if r.efficiency_score is not None]
+    efficiency_config = efficiency_config or {}
     declared = {}
     for field in PURPLE_TELEMETRY_FIELDS:
         values = [item[field] for item in reported if item.get(field) is not None]
@@ -142,13 +140,46 @@ def _purple_efficiency_summary(results: List["BenchmarkResult"]) -> Dict[str, An
             "total_request_bytes": sum(r.purple_request_bytes for r in live),
             "total_response_bytes": sum(r.purple_response_bytes for r in live),
             "median_wall_time_sec": statistics.median(times) if times else None,
+            "average_efficiency_score": sum(scores) / len(scores) if scores else None,
             "cached_cases": sum(bool(r.purple_response_from_cache) for r in results),
         },
         "agent_declared": declared,
+        "score_budgets": {
+            "time_budget_sec": float(efficiency_config.get("time_budget_sec", 300)),
+            "response_bytes_budget": int(
+                efficiency_config.get("response_bytes_budget", 100000)
+            ),
+        },
         "telemetry_reported_cases": len(reported),
         "live_cases": len(live),
         "total_cases": len(results),
     }
+
+
+def _calculate_efficiency_score(
+    result: "BenchmarkResult", efficiency_config: Dict[str, Any]
+) -> Optional[float]:
+    """Score Purple resource efficiency independently of solution quality."""
+    if result.purple_response_from_cache:
+        return None
+
+    evaluation = result.evaluation_summary or {}
+    successful = bool(result.runs and evaluation.get("all_gates_passed", False))
+    if not successful:
+        return 0.0
+
+    elapsed = result.purple_wall_time_sec
+    response_bytes = result.purple_response_bytes
+    time_budget = float(efficiency_config.get("time_budget_sec", 300))
+    byte_budget = int(efficiency_config.get("response_bytes_budget", 100000))
+    if not elapsed or elapsed <= 0 or response_bytes <= 0:
+        return None
+    if time_budget <= 0 or byte_budget <= 0:
+        raise ValueError("Purple efficiency budgets must be positive")
+
+    time_score = min(1.0, time_budget / elapsed)
+    byte_score = min(1.0, byte_budget / response_bytes)
+    return round(100.0 * math.sqrt(time_score * byte_score), 2)
 
 
 def _slug(name):
@@ -236,6 +267,7 @@ class BenchmarkResult:
     purple_response_bytes: int = 0
     purple_response_from_cache: bool = False
     purple_telemetry: Optional[Dict[str, Any]] = None
+    efficiency_score: Optional[float] = None
     # Compilation fields
     compile_stdout: Optional[str] = None
     compile_stderr: Optional[str] = None
@@ -291,15 +323,14 @@ class Agent:
         # Key on the model under test as well: rescoring one fixed set of
         # submissions under a different judge must reuse that model's cache,
         # and different models must not overwrite each other.
-        return self.cache_dir / f"{_slug(self.purple_model)}-{safe_name}.pkl"
+        return self.cache_dir / f"{_slug(self.purple_model)}-{safe_name}.pb"
 
     def _load_cached_response(self, problem_name: str) -> Optional[Any]:
         """Load cached purple agent response if it exists."""
         cache_path = self._get_cache_path(problem_name)
         if cache_path.exists():
             try:
-                with open(cache_path, 'rb') as f:
-                    cached_data = pickle.load(f)
+                cached_data = StreamResponse.FromString(cache_path.read_bytes())
                 print(f"@@@ Green agent: ✅ Loaded cached response for {problem_name}")
                 return cached_data
             except Exception as e:
@@ -311,8 +342,7 @@ class Agent:
         """Save purple agent response to cache."""
         cache_path = self._get_cache_path(problem_name)
         try:
-            with open(cache_path, 'wb') as f:
-                pickle.dump(response, f)
+            cache_path.write_bytes(response.SerializeToString())
             print(f"@@@ Green agent: 💾 Cached response for {problem_name}")
         except Exception as e:
             print(f"@@@ Green agent: ❌ Failed to save cache for {problem_name}: {e}")
@@ -334,34 +364,34 @@ class Agent:
         dep_list = []
         used_names = set()
         for f in file_list:
-            source = f.bytes.decode("utf-8") if isinstance(f.bytes, bytes) else str(f.bytes)
-            original_name = f.name
+            source = f.raw.decode("utf-8")
+            original_name = f.filename
             safe_name = Path(original_name).name
             if not safe_name or safe_name in {".", ".."}:
                 raise ValueError(f"Invalid generated filename: {original_name!r}")
             parts = safe_name.split('.')
             ext = parts[-1]
-            f.name = safe_name
+            server_name = safe_name
             # Use a base name to avoid overwriting multiple files of the same type
             if ext == "c":
-                f.name = f"{pname}.c"
+                server_name = f"{pname}.c"
             elif ext == "cu":
-                f.name = f"{pname}cu.cu"
-                dep_list.append(f.name)
+                server_name = f"{pname}cu.cu"
+                dep_list.append(server_name)
             if ext == "cpp" and len(parts) > 2 and parts[-2] == "kokkos":
-                f.name = f"{pname}kok.kokkos.cpp"
-                dep_list.append(f.name)
-            if f.name in used_names:
-                raise ValueError(f"Duplicate generated filename after normalization: {f.name}")
-            used_names.add(f.name)
+                server_name = f"{pname}kok.kokkos.cpp"
+                dep_list.append(server_name)
+            if server_name in used_names:
+                raise ValueError(f"Duplicate generated filename after normalization: {server_name}")
+            used_names.add(server_name)
             generated_sources.append({
                 "original_name": original_name,
-                "server_name": f.name,
+                "server_name": server_name,
                 "sha256": hashlib.sha256(source.encode("utf-8")).hexdigest(),
                 "source": source,
             })
             created = await self.mcp_client.create_file_from_string(
-                filename=f.name, file_contents=source
+                filename=server_name, file_contents=source
                 )
             if not created:
                 raise RuntimeError(
@@ -467,7 +497,7 @@ class Agent:
             pdesc = data["problem_description"]
 
             await updater.update_status(
-                TaskState.working,
+                TaskState.TASK_STATE_WORKING,
                 new_agent_text_message(f"[{idx}/{len(test_data)}] Running {pname}..."),
             )
 
@@ -519,12 +549,11 @@ class Agent:
                 if self.use_cache:
                     self._save_cached_response(pname, purple_agent_response)
 
-                res_root = purple_agent_response.root
-                if not isinstance(res_root, SendMessageSuccessResponse):
-                    raise ValueError(f"Expected SendMessageSuccessResponse, got {type(res_root).__name__}")
-                res_result = res_root.result
-                if not isinstance(res_result, Message):
-                    raise ValueError(f"Expected Message, got {type(res_result).__name__}")
+                if not isinstance(purple_agent_response, StreamResponse):
+                    raise ValueError(f"Expected StreamResponse, got {type(purple_agent_response).__name__}")
+                if not purple_agent_response.HasField("message"):
+                    raise ValueError("Expected a Message response from Purple Agent")
+                res_result = purple_agent_response.message
                 text_list = get_text_parts(res_result.parts)
                 file_list = get_file_parts(res_result.parts)
                 br.purple_telemetry = _extract_purple_telemetry(res_result.parts)
@@ -604,10 +633,13 @@ class Agent:
                 # Update evaluation summary
                 if br.tier:
                     summary["tier_distribution"][br.tier] += 1
+                br.efficiency_score = _calculate_efficiency_score(
+                    br, self.config.get("scoring", {}).get("efficiency", {})
+                )
                 # Optional: per-case artifact (useful for debugging)
                 await updater.add_artifact(
                     name=f"benchmark_result_{pname}.json",
-                    parts=[TextPart(text=json.dumps(asdict(br), indent=2))],
+                    parts=[new_text_part(json.dumps(asdict(br), indent=2))],
                 )
 
             except Exception as e:
@@ -616,6 +648,9 @@ class Agent:
                 br.tier = "FAIL"
                 br.composite_score = 0.0
                 br.evaluation_summary = {'error': str(e)}
+                br.efficiency_score = _calculate_efficiency_score(
+                    br, self.config.get("scoring", {}).get("efficiency", {})
+                )
                 summary["failure_count"] += 1
                 summary["tier_distribution"]["FAIL"] += 1
 
@@ -648,7 +683,9 @@ class Agent:
         summary["total_completion_tokens"] = sum(r.completion_tokens or 0 for r in live_results)
         summary["total_tokens"] = sum(r.total_tokens or 0 for r in live_results)
         summary["total_cached_tokens"] = sum(r.cached_tokens or 0 for r in live_results)
-        summary["purple_efficiency"] = _purple_efficiency_summary(results)
+        summary["purple_efficiency"] = _purple_efficiency_summary(
+            results, self.config.get("scoring", {}).get("efficiency", {})
+        )
 
         # Save output as <model>-judge-<judge>-run<N>.json so that repeated
         # launches do not overwrite each other and each file records both the
@@ -696,7 +733,7 @@ class Agent:
         print(f"@@@ Green agent: Saved results to {local_path}")
         await updater.add_artifact(
             name=filename,
-            parts=[TextPart(text=json.dumps(json_data, indent=2))],
+            parts=[new_text_part(json.dumps(json_data, indent=2))],
             metadata=summary,
         )
 
@@ -704,7 +741,7 @@ class Agent:
         await self._create_evaluation_report(results, summary, updater)
 
         await updater.update_status(
-            TaskState.completed,
+            TaskState.TASK_STATE_COMPLETED,
             new_agent_text_message(
                 f"Done. {summary['runs_count']}/{summary['total']} succeeded. "
                 f"Avg score: {summary.get('avg_composite_score', 0):.1f}/100"
@@ -855,7 +892,7 @@ class Agent:
         # Save as artifact
         await updater.add_artifact(
             name="evaluation_report.txt",
-            parts=[TextPart(text=report_text)],
+            parts=[new_text_part(report_text)],
         )
 
         # Also save detailed JSON
@@ -876,5 +913,5 @@ class Agent:
 
         await updater.add_artifact(
             name="evaluation_detailed_report.json",
-            parts=[TextPart(text=json.dumps(detailed_report, indent=2))],
+            parts=[new_text_part(json.dumps(detailed_report, indent=2))],
         )

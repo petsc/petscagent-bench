@@ -5,10 +5,11 @@ import tomllib
 from pathlib import Path
 from typing import Any, Dict
 
-from a2a.server.apps import A2AStarletteApplication
 from a2a.server.request_handlers import DefaultRequestHandler
+from a2a.server.routes import create_agent_card_routes, create_jsonrpc_routes
 from a2a.server.tasks import InMemoryTaskStore
-from a2a.types import AgentCard
+from starlette.applications import Starlette
+from src.util.a2a_v1 import AgentCard, AgentCapabilities, AgentInterface, AgentSkill
 from src.green_agent.executor import GreenAgentExecutor
 from loguru import logger
 
@@ -122,15 +123,33 @@ def start_green_agent(
     if api_base_url:
         config["evaluation"]["llm"]["api_base_url"] = api_base_url
 
+    agent_card = AgentCard(
+        name=agent_card_dict["name"],
+        description=agent_card_dict["description"],
+        version=agent_card_dict["version"],
+        documentation_url=agent_card_dict.get("documentation_url", ""),
+        supported_interfaces=[AgentInterface(
+            url=agent_card_dict["url"],
+            protocol_binding="JSONRPC",
+            protocol_version=agent_card_dict.get("protocol_version", "1.0"),
+        )],
+        default_input_modes=agent_card_dict.get("defaultInputModes", []),
+        default_output_modes=agent_card_dict.get("defaultOutputModes", []),
+        capabilities=AgentCapabilities(
+            streaming=agent_card_dict.get("capabilities", {}).get("streaming", False),
+        ),
+        skills=[AgentSkill(**skill) for skill in agent_card_dict.get("skills", [])],
+    )
     request_handler = DefaultRequestHandler(
         agent_executor=GreenAgentExecutor(config),
         task_store=InMemoryTaskStore(),
+        agent_card=agent_card,
     )
-    server = A2AStarletteApplication(
-        agent_card=AgentCard(**agent_card_dict),
-        http_handler=request_handler,
-    )
-    uvicorn.run(server.build(), host=host, port=port)
+    app = Starlette(routes=[
+        *create_agent_card_routes(agent_card),
+        *create_jsonrpc_routes(request_handler, rpc_url="/"),
+    ])
+    uvicorn.run(app, host=host, port=port)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run the green agent.")

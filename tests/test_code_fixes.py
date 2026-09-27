@@ -30,8 +30,8 @@ class FakeMCPClient:
 
 class FakeFile:
     def __init__(self, name, source):
-        self.name = name
-        self.bytes = source
+        self.filename = name
+        self.raw = source.encode("utf-8")
 
 
 class CodeFixTests(unittest.TestCase):
@@ -147,7 +147,7 @@ class CodeFixTests(unittest.TestCase):
 
     def test_purple_telemetry_is_optional_structured_a2a_data(self):
         from unittest import mock
-        from a2a.types import DataPart
+        from a2a.helpers.proto_helpers import new_data_part
         from src.green_agent.agent import _extract_purple_telemetry
 
         telemetry = {
@@ -157,25 +157,25 @@ class CodeFixTests(unittest.TestCase):
             "cost_usd": 0.04,
         }
         self.assertEqual(
-            _extract_purple_telemetry([DataPart(data=telemetry)]), telemetry
+            _extract_purple_telemetry([new_data_part(telemetry)]), telemetry
         )
         self.assertIsNone(_extract_purple_telemetry([]))
         with mock.patch("builtins.print") as print_mock:
             self.assertIsNone(
                 _extract_purple_telemetry([
-                    DataPart(data={"schema_version": "petscagent.solution.v1"})
+                    new_data_part({"schema_version": "petscagent.solution.v1"})
                 ])
             )
         print_mock.assert_not_called()
         with mock.patch("builtins.print") as print_mock:
             self.assertIsNone(
                 _extract_purple_telemetry([
-                    DataPart(data={"schema_version": "petscagent.telemetry.v2"})
+                    new_data_part({"schema_version": "petscagent.telemetry.v2"})
                 ])
             )
         print_mock.assert_called_once()
         self.assertEqual(
-            _extract_purple_telemetry([DataPart(data={
+            _extract_purple_telemetry([new_data_part({
                 "schema_version": "petscagent.telemetry.v1",
                 "model_calls": "unknown",
                 "tool_calls": -1,
@@ -184,13 +184,13 @@ class CodeFixTests(unittest.TestCase):
         )
 
     def test_purple_telemetry_counts_must_be_whole_numbers(self):
-        from a2a.types import DataPart
+        from a2a.helpers.proto_helpers import new_data_part
         from src.green_agent.agent import _extract_purple_telemetry
 
         # A fractional count is a reporting bug, so it is dropped rather than
         # truncated into a number that looks trustworthy. Dollar cost keeps
         # its precision.
-        extracted = _extract_purple_telemetry([DataPart(data={
+        extracted = _extract_purple_telemetry([new_data_part({
             "schema_version": "petscagent.telemetry.v1",
             "input_tokens": 1200.7,
             "output_tokens": 600.0,
@@ -247,6 +247,32 @@ class CodeFixTests(unittest.TestCase):
         self.assertEqual(summary["live_cases"], 1)
         self.assertEqual(summary["total_cases"], 2)
 
+    def test_efficiency_score_is_separate_and_budget_based(self):
+        from src.green_agent.agent import BenchmarkResult, _calculate_efficiency_score
+
+        config = {"time_budget_sec": 10, "response_bytes_budget": 1000}
+        successful = BenchmarkResult(
+            "success", "p1", True, True,
+            purple_wall_time_sec=20,
+            purple_response_bytes=4000,
+            evaluation_summary={"all_gates_passed": True},
+        )
+        failed = BenchmarkResult(
+            "failure", "p2", False, False,
+            purple_wall_time_sec=1,
+            purple_response_bytes=10,
+            evaluation_summary={"all_gates_passed": False},
+        )
+        cached = BenchmarkResult(
+            "cached", "p3", True, True,
+            purple_response_from_cache=True,
+            evaluation_summary={"all_gates_passed": True},
+        )
+
+        self.assertEqual(_calculate_efficiency_score(successful, config), 35.36)
+        self.assertEqual(_calculate_efficiency_score(failed, config), 0.0)
+        self.assertIsNone(_calculate_efficiency_score(cached, config))
+
     def test_cached_telemetry_is_kept_per_problem_but_not_aggregated(self):
         from src.green_agent.agent import BenchmarkResult, _purple_efficiency_summary
 
@@ -280,12 +306,16 @@ class CodeFixTests(unittest.TestCase):
         captured = {}
 
         class FakeClient:
+            async def send_message(self, request):
+                captured["sent"] = request
+                yield request
+
+        class FakeFactory:
             def __init__(self, *a, **kw):
                 pass
 
-            async def send_message(self, request):
-                captured["sent"] = request
-                return request
+            def create(self, card):
+                return FakeClient()
 
         class FakeResolver:
             def __init__(self, *a, **kw):
@@ -294,7 +324,7 @@ class CodeFixTests(unittest.TestCase):
             async def get_agent_card(self):
                 return object()
 
-        with mock.patch("src.util.a2a_comm.A2AClient", FakeClient), \
+        with mock.patch("src.util.a2a_comm.ClientFactory", FakeFactory), \
              mock.patch("src.util.a2a_comm.A2ACardResolver", FakeResolver):
             sizes = []
             asyncio.run(send_message(
@@ -328,6 +358,22 @@ class CodeFixTests(unittest.TestCase):
                 ))
 
         self.assertEqual(callbacks, [])
+
+    def test_a2a_v1_response_cache_round_trip(self):
+        import tempfile
+        from a2a.types.a2a_pb2 import StreamResponse
+        from src.green_agent.agent import Agent
+        from src.util.a2a_v1 import new_agent_text_message
+
+        agent = Agent.__new__(Agent)
+        agent.purple_model = "test/model"
+        with tempfile.TemporaryDirectory() as cache_dir:
+            agent.cache_dir = Path(cache_dir)
+            response = StreamResponse(message=new_agent_text_message("cached"))
+            agent._save_cached_response("problem", response)
+            loaded = agent._load_cached_response("problem")
+            self.assertEqual(loaded, response)
+            self.assertEqual(agent._get_cache_path("problem").suffix, ".pb")
 
     def test_a2a_payload_measurement_never_fails_a_solution(self):
         from src.green_agent.agent import _a2a_payload_bytes

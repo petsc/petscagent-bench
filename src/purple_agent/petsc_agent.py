@@ -17,14 +17,16 @@ import uvicorn
 import dotenv
 import os
 import json
-from a2a.server.apps import A2AStarletteApplication
 from a2a.server.request_handlers import DefaultRequestHandler
+from a2a.server.routes import create_agent_card_routes, create_jsonrpc_routes
 from a2a.server.agent_execution import AgentExecutor, RequestContext
 from a2a.server.events import EventQueue
 from a2a.server.tasks import InMemoryTaskStore
-from a2a.types import AgentSkill, AgentCard, AgentCapabilities
-from a2a.utils import new_agent_parts_message
-from a2a.types import DataPart, TextPart, FilePart, FileWithBytes
+from starlette.applications import Starlette
+from src.util.a2a_v1 import (
+    AgentSkill, AgentCard, AgentCapabilities, AgentInterface,
+    new_agent_parts_message, new_data_part, new_raw_part, new_text_part,
+)
 import litellm
 from litellm import completion
 from pydantic import BaseModel
@@ -116,7 +118,9 @@ def prepare_purple_agent_card(url):
         description="PETSc code generation agent for petscagent-bench. "
                     "Receives scientific computing problem descriptions via A2A and "
                     "uses an LLM to produce compilable PETSc C/C++ source code.",
-        url=url,
+        supported_interfaces=[AgentInterface(
+            url=url, protocol_binding="JSONRPC", protocol_version="1.0"
+        )],
         version="1.0.0",
         default_input_modes=["text/plain"],
         default_output_modes=["text/plain", "application/octet-stream"],
@@ -282,17 +286,15 @@ class PetscAgentExecutor(AgentExecutor):
             except Exception:
                 pass
             parts_list = [
-                TextPart(text=f"Code generation successful ✅\nnsize: {nsize}\ncli_args: {cli_args}\n"),
-                DataPart(data=telemetry),
+                new_text_part(f"Code generation successful ✅\nnsize: {nsize}\ncli_args: {cli_args}\n"),
+                new_data_part(telemetry),
             ]
             for entry in data["codes"]:
                 # Create file object with code content
-                fwb = FileWithBytes(
-                    name=entry["filename"],
-                    bytes=entry["code"].encode("utf-8"),
-                    mime_type="text/plain"
-                )
-                parts_list.append(FilePart(file=fwb))
+                parts_list.append(new_raw_part(
+                    entry["code"].encode("utf-8"),
+                    filename=entry["filename"], media_type="text/plain",
+                ))
             # Send the successful response back to the client
             await event_queue.enqueue_event(
                 new_agent_parts_message(parts_list, context_id=context.context_id)
@@ -307,7 +309,7 @@ class PetscAgentExecutor(AgentExecutor):
             # responses are indistinguishable from each other.
             self._dump_failed_response(locals().get("response"), locals().get("content"), e)
             # Return error message to the client
-            parts_list = [TextPart(text=f"Code generation failed ❌\nerror: {e}\n")]
+            parts_list = [new_text_part(f"Code generation failed ❌\nerror: {e}\n")]
             await event_queue.enqueue_event(
                 new_agent_parts_message(parts_list, context_id=context.context_id)
             )
@@ -406,12 +408,13 @@ def start_purple_agent(
     request_handler = DefaultRequestHandler(
         agent_executor=PetscAgentExecutor(config),
         task_store=InMemoryTaskStore(),
-    )
-    app = A2AStarletteApplication(
         agent_card=card,
-        http_handler=request_handler,
     )
-    uvicorn.run(app.build(), host=host, port=port)
+    app = Starlette(routes=[
+        *create_agent_card_routes(card),
+        *create_jsonrpc_routes(request_handler, rpc_url="/"),
+    ])
+    uvicorn.run(app, host=host, port=port)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run the purple agent.")

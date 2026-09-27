@@ -119,7 +119,7 @@ Each per-problem result also includes Purple Agent efficiency measured at the
 A2A boundary: request count, request/response bytes, wall-clock latency, and
 whether the response came from the cache. Request and response bytes are both
 the serialized JSON-RPC payload, so the two are directly comparable. Purple
-Agents may additionally return a structured A2A `DataPart` using the optional
+Agents may additionally return a structured A2A data `Part` using the optional
 `petscagent.telemetry.v1` schema:
 
 ```json
@@ -153,6 +153,20 @@ The run summary reports these under `purple_efficiency`, split into
 actually sent to the agent during the run. A cached response replays an earlier
 run's telemetry, so cached cases are counted in `cached_cases` and excluded from
 every other figure, while the per-problem record keeps its telemetry.
+
+Each live problem also receives a separate `efficiency_score`; it does not
+change `composite_score` or the GOLD/SILVER/BRONZE tier. The budgets are fixed
+in `config/green_agent_config.yaml`, and the score is:
+
+```text
+time_score = min(1, time_budget_sec / purple_wall_time_sec)
+byte_score = min(1, response_bytes_budget / purple_response_bytes)
+efficiency_score = 100 * sqrt(time_score * byte_score)
+```
+
+A solution is successful for this score when it runs and all evaluation gates
+pass; an unsuccessful solution scores zero. Cached responses have no efficiency
+score because no Purple Agent work occurred during that benchmark run.
 
 ### Task artifacts
 
