@@ -60,7 +60,7 @@ jobs:
             # For tags like v1.0, create tag '1'
             type=semver,pattern={{major}}
             # For main branch, create tag 'latest'
-            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
             # For PRs, create tag 'pr-123'
             type=ref,event=pr
 
@@ -76,7 +76,11 @@ jobs:
             ref_name="${ref_name#refs/tags/}"
             meta_tags="ghcr.io/${{ github.repository }}-${{ matrix.name }}:${ref_name}"
           fi
-          echo "tags=$meta_tags" >> $GITHUB_OUTPUT
+          {
+            echo 'tags<<EOF'
+            echo "$meta_tags"
+            echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
 
       - name: Build and push Docker image (${{ matrix.name }})
         id: build
