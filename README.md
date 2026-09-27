@@ -395,4 +395,8 @@ Legacy `.pkl` caches from the A2A 0.3 implementation are not reused.
    - Confirm the Green and Purple URLs/ports match your deployment.
    - If agents are slow to start, you may need to increase timeouts in `src/util/a2a_comm.py`.
 5. **Port conflicts**: Modify ports in `src/launcher.py` if defaults are in use (Green `9001`, Purple `9002`, MCP `8080`).
+
+## Release history
+
+See [CHANGELOG.md](CHANGELOG.md) for release notes.
 6. **Missing output files**: Only the per-run `output/<model>-judge-<judge>-run<N>.json` file is written to disk by default; other reports are emitted as task artifacts.
