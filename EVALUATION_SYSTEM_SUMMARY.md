@@ -435,28 +435,44 @@ self.cache_dir.mkdir(exist_ok=True)
 def _get_cache_path(self, problem_name: str) -> Path:
     """Get the cache file path for a given problem."""
     safe_name = re.sub(r'[^\w\-_]', '_', problem_name)
-    return self.cache_dir / f"{safe_name}.pkl"
+    return self.cache_dir / f"{_slug(self.purple_model)}-{safe_name}.pb"
 
 def _load_cached_response(self, problem_name: str):
     """Load cached purple agent response if it exists."""
     cache_path = self._get_cache_path(problem_name)
     if cache_path.exists():
-        with open(cache_path, 'rb') as f:
-            return pickle.load(f)
+        return StreamResponse.FromString(cache_path.read_bytes())
     return None
 
 def _save_cached_response(self, problem_name: str, response):
     """Save purple agent response to cache."""
     cache_path = self._get_cache_path(problem_name)
-    with open(cache_path, 'wb') as f:
-        pickle.dump(response, f)
+    cache_path.write_bytes(response.SerializeToString())
 ```
 
 **Benefits:**
 - 🚀 Faster re-evaluation during development
 - 💰 No redundant Purple Agent calls (cost savings)
 - 🔄 Consistent results for testing evaluation changes
-- 📁 Stored in `./purple_agent_cache/` as `.pkl` files
+- 📁 Stored in `./purple_agent_cache/` as A2A 1.x protobuf `.pb` files
+
+The model name is part of the cache key so submissions from different Purple
+models cannot overwrite one another. Legacy A2A 0.3 pickle caches are not
+loaded by the A2A 1.x implementation.
+
+## Purple Agent Efficiency
+
+Green records framework-independent observations at the A2A boundary for each
+live problem: request count, request and response payload sizes, and wall-clock
+latency. Purple may additionally declare model calls, tool calls, token usage,
+peak context size, and dollar cost in a `petscagent.telemetry.v1` data `Part`.
+Those internal fields are optional because Green does not assume anything
+about the Purple Agent's framework or orchestration.
+
+Successful live problems receive a separate budget-based `efficiency_score`.
+Failed live problems receive zero and cached problems receive no efficiency
+score. This score is reported separately and does not change the quality
+`composite_score` or GOLD/SILVER/BRONZE tier.
 
 ## Performance & cost
 
@@ -653,7 +669,7 @@ output/
 
 ```
 purple_agent_cache/
-└── *.pkl
+└── *.pb
 ```
 
 ## Status

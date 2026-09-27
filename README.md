@@ -118,8 +118,9 @@ summary, per-problem results, and the provenance of the run (`purple_model`,
 Each per-problem result also includes Purple Agent efficiency measured at the
 A2A boundary: request count, request/response bytes, wall-clock latency, and
 whether the response came from the cache. Request and response bytes are both
-the serialized JSON-RPC payload, so the two are directly comparable. Purple
-Agents may additionally return a structured A2A data `Part` using the optional
+measured from the canonical A2A 1.x protobuf payload, so the two are directly
+comparable. Purple Agents may additionally return a structured A2A data `Part`
+using the optional
 `petscagent.telemetry.v1` schema:
 
 ```json
@@ -367,7 +368,11 @@ class MyCustomEvaluator(Evaluator):
 
 ### Caching
 
-The Green Agent can cache Purple Agent responses (pickled per problem) to speed up development iteration. Cached responses are stored in `purple_agent_cache/`.
+The Green Agent can cache Purple Agent responses per problem to speed up
+development iteration. A2A 1.x `StreamResponse` messages are serialized using
+their protobuf wire format and stored as `.pb` files in
+`purple_agent_cache/`. Cache keys include the Purple model and problem name.
+Legacy `.pkl` caches from the A2A 0.3 implementation are not reused.
 
 ## Troubleshooting
 
