@@ -24,7 +24,7 @@ tools to compile and execute generated PETSc code.
 Underlying model(s): N/A (the Green Agent itself is not an LLM; it uses
 an LLM for quality evaluation, configurable via green_agent_config.yaml).
 """
-version = "0.1.0"
+version = "1.0.0"
 documentation_url = "https://github.com/petsc/petscagent-bench"
 protocol_version = "0.3.0"
 preferred_transport = "JSONRPC"
