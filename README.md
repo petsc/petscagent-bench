@@ -115,6 +115,45 @@ model/judge pair do not overwrite each other. Each file contains the overall
 summary, per-problem results, and the provenance of the run (`purple_model`,
 `judge_model`, `run_index`) along with per-problem token counts.
 
+Each per-problem result also includes Purple Agent efficiency measured at the
+A2A boundary: request count, request/response bytes, wall-clock latency, and
+whether the response came from the cache. Request and response bytes are both
+the serialized JSON-RPC payload, so the two are directly comparable. Purple
+Agents may additionally return a structured A2A `DataPart` using the optional
+`petscagent.telemetry.v1` schema:
+
+```json
+{
+  "schema_version": "petscagent.telemetry.v1",
+  "model_calls": 5,
+  "tool_calls": 8,
+  "input_tokens": 24000,
+  "output_tokens": 6000,
+  "total_tokens": 30000,
+  "cached_tokens": 12000,
+  "peak_context_tokens": 18000,
+  "cost_usd": 0.51
+}
+```
+
+All fields except `schema_version` are optional. These internal values are
+agent-declared because the Green Agent cannot independently observe an agent's
+framework, model calls, context, tools, or provider billing. Missing values are
+reported as unavailable rather than zero and do not affect the quality score.
+Every field except `cost_usd` counts discrete events and must
+be a whole number; fractional, negative, or non-numeric values are dropped.
+`model_calls` counts logical model invocation attempts initiated by the Purple
+Agent; retries hidden inside a provider or SDK are excluded unless the agent
+can observe them. `tool_calls` counts tool invocation attempts initiated by the
+Purple Agent, including failed attempts. Agents that cannot measure a field
+omit it.
+
+The run summary reports these under `purple_efficiency`, split into
+`benchmark_measured` and `agent_declared`. Both halves cover only the cases
+actually sent to the agent during the run. A cached response replays an earlier
+run's telemetry, so cached cases are counted in `cached_cases` and excluded from
+every other figure, while the per-problem record keeps its telemetry.
+
 ### Task artifacts
 
 The Green Agent also emits A2A task artifacts (via `TaskUpdater.add_artifact`). Depending on your runner/integration, these may be downloadable from logs/UI but are not written to `output/` by default:

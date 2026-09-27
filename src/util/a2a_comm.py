@@ -86,7 +86,7 @@ async def wait_agent_ready(url, timeout=10):
 
 
 async def send_message(
-    url, message, task_id=None, context_id=None
+    url, message, task_id=None, context_id=None, on_request=None
 ) -> SendMessageResponse:
     """Send a message to an A2A-compliant agent.
 
@@ -101,6 +101,10 @@ async def send_message(
         message: Text message to send to the agent
         task_id: Optional task identifier for message threading (default: None)
         context_id: Optional context identifier for maintaining conversation state (default: None)
+        on_request: Optional callback invoked with the fully built
+            SendMessageRequest just before it is sent. Callers use it to
+            measure the outgoing payload, which is assembled here rather than
+            by the caller (default: None)
 
     Returns:
         SendMessageResponse object containing the agent's response
@@ -134,6 +138,8 @@ async def send_message(
         # Create request with unique ID
         request_id = uuid.uuid4().hex
         req = SendMessageRequest(id=request_id, params=params)
+        if on_request is not None:
+            on_request(req)
 
         # Send message and await response
         response = await client.send_message(request=req)

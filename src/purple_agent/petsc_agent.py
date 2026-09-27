@@ -24,13 +24,15 @@ from a2a.server.events import EventQueue
 from a2a.server.tasks import InMemoryTaskStore
 from a2a.types import AgentSkill, AgentCard, AgentCapabilities
 from a2a.utils import new_agent_parts_message
-from a2a.types import TextPart, FilePart, FileWithBytes
+from a2a.types import DataPart, TextPart, FilePart, FileWithBytes
 import litellm
 from litellm import completion
 from pydantic import BaseModel
 from loguru import logger
 from typing import Any, Dict
 from pathlib import Path
+
+from src.util.telemetry import PURPLE_TELEMETRY_SCHEMA
 
 dotenv.load_dotenv()
 
@@ -115,7 +117,7 @@ def prepare_purple_agent_card(url):
                     "Receives scientific computing problem descriptions via A2A and "
                     "uses an LLM to produce compilable PETSc C/C++ source code.",
         url=url,
-        version="0.1.0",
+        version="1.0.0",
         default_input_modes=["text/plain"],
         default_output_modes=["text/plain", "application/octet-stream"],
         capabilities=AgentCapabilities(),
@@ -249,9 +251,18 @@ class PetscAgentExecutor(AgentExecutor):
             # Parse the JSON response
             nsize = data["nsize"]
             cli_args = data["cli_args"]
-            # Report token usage so the evaluator can record generation cost.
-            # Appended after cli_args to keep the existing response format intact.
-            usage_line = ""
+            # Report optional implementation telemetry in a structured A2A
+            # part. Green still understands legacy token lines from older
+            # agents and cached responses, but this agent emits one source of
+            # truth.
+            telemetry = {
+                "schema_version": PURPLE_TELEMETRY_SCHEMA,
+                # One completion and no tools. litellm may retry or fall back
+                # internally, so this counts the calls the agent made, not the
+                # calls that reached a provider.
+                "model_calls": 1,
+                "tool_calls": 0,
+            }
             try:
                 u = response.usage
                 # cached_tokens is reported in different places by different
@@ -260,15 +271,20 @@ class PetscAgentExecutor(AgentExecutor):
                 if cached is None:
                     details = getattr(u, "prompt_tokens_details", None)
                     cached = getattr(details, "cached_tokens", None) if details else None
-                usage_line = (
-                    f"prompt_tokens: {u.prompt_tokens}\n"
-                    f"completion_tokens: {u.completion_tokens}\n"
-                    f"total_tokens: {getattr(u, 'total_tokens', u.prompt_tokens + u.completion_tokens)}\n"
-                    f"cached_tokens: {cached or 0}\n"
-                )
+                telemetry.update({
+                    "input_tokens": u.prompt_tokens,
+                    "output_tokens": u.completion_tokens,
+                    "total_tokens": getattr(
+                        u, "total_tokens", u.prompt_tokens + u.completion_tokens
+                    ),
+                    "cached_tokens": cached or 0,
+                })
             except Exception:
                 pass
-            parts_list = [TextPart(text=f"Code generation successful ✅\nnsize: {nsize}\ncli_args: {cli_args}\n{usage_line}")]
+            parts_list = [
+                TextPart(text=f"Code generation successful ✅\nnsize: {nsize}\ncli_args: {cli_args}\n"),
+                DataPart(data=telemetry),
+            ]
             for entry in data["codes"]:
                 # Create file object with code content
                 fwb = FileWithBytes(

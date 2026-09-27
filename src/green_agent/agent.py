@@ -21,8 +21,12 @@ import time
 import re
 import pickle
 import hashlib
+import math
+import numbers
+import statistics
 from a2a.server.tasks import TaskUpdater
 from a2a.types import (
+    DataPart,
     Message,
     TaskState,
     TextPart,
@@ -30,6 +34,11 @@ from a2a.types import (
 )
 from a2a.utils import get_message_text, new_agent_text_message, get_text_parts, get_file_parts
 from src.util.a2a_comm import send_message
+from src.util.telemetry import (
+    PURPLE_TELEMETRY_FIELDS,
+    PURPLE_TELEMETRY_INTEGER_FIELDS,
+    PURPLE_TELEMETRY_SCHEMA,
+)
 from pathlib import Path
 
 from dataclasses import dataclass, asdict
@@ -44,6 +53,102 @@ from petsc_compile_run_mcp_client import PetscCompileRunMCPClient
 # Import evaluation system
 from src.evaluators import EvaluationPipeline
 from src.metrics import MetricsAggregator
+
+
+def _extract_purple_telemetry(parts: List[Any]) -> Optional[Dict[str, Any]]:
+    """Return optional implementation-reported Purple Agent telemetry.
+
+    Telemetry is deliberately carried in an A2A DataPart so agents implemented
+    with Claude Code, LangGraph, or any other framework can expose the same
+    optional contract without the Green Agent depending on that framework.
+    """
+    for part in parts:
+        value = getattr(part, "root", part)
+        if not isinstance(value, DataPart):
+            continue
+        data = value.data
+        version = data.get("schema_version")
+        if version != PURPLE_TELEMETRY_SCHEMA:
+            # An agent that reports nothing and an agent whose schema has
+            # moved on both yield zero telemetry, so name the second case.
+            if (
+                isinstance(version, str)
+                and version.startswith("petscagent.telemetry.")
+            ):
+                print(
+                    f"@@@ Green agent: ⚠️ Ignoring DataPart with telemetry schema "
+                    f"{version!r}; this benchmark reads {PURPLE_TELEMETRY_SCHEMA!r}"
+                )
+            continue
+        telemetry = {"schema_version": PURPLE_TELEMETRY_SCHEMA}
+        for field in PURPLE_TELEMETRY_FIELDS:
+            metric = data.get(field)
+            # Optional telemetry must never invalidate a usable solution.
+            # Ignore malformed, negative, or non-finite values rather than
+            # trusting arbitrary agent output.
+            if (
+                not isinstance(metric, numbers.Real)
+                or isinstance(metric, bool)
+                or not math.isfinite(metric)
+                or metric < 0
+            ):
+                continue
+            if field in PURPLE_TELEMETRY_INTEGER_FIELDS:
+                # Counts must be whole. Truncating 1200.7 to 1200 would turn a
+                # reporting bug into a number that looks trustworthy.
+                if metric != int(metric):
+                    continue
+                metric = int(metric)
+            telemetry[field] = metric
+        return telemetry
+    return None
+
+
+def _a2a_payload_bytes(payload: Any) -> int:
+    """Measure a serialized A2A payload using its Pydantic model.
+
+    Requests and responses both go through this one function so the reported
+    request and response byte counts are directly comparable. Measuring must
+    never fail a usable solution, so an unmeasurable payload reports 0.
+    """
+    try:
+        return len(payload.model_dump_json(by_alias=True).encode("utf-8"))
+    except Exception as e:
+        print(f"@@@ Green agent: ⚠️ Could not measure A2A payload size: {e}")
+        return 0
+
+
+def _purple_efficiency_summary(results: List["BenchmarkResult"]) -> Dict[str, Any]:
+    """Aggregate measured and optional agent-declared Purple efficiency.
+
+    Cached cases are excluded from both halves. A cached response replays the
+    telemetry of an earlier run, so folding it in would report work that this
+    run never performed. Per-problem records keep their telemetry regardless.
+    """
+    live = [r for r in results if not r.purple_response_from_cache]
+    times = [r.purple_wall_time_sec for r in live if r.purple_wall_time_sec is not None]
+    reported = [r.purple_telemetry for r in live if r.purple_telemetry is not None]
+    declared = {}
+    for field in PURPLE_TELEMETRY_FIELDS:
+        values = [item[field] for item in reported if item.get(field) is not None]
+        declared[field] = {
+            "reported_cases": len(values),
+            "total": sum(values) if values else None,
+            "median": statistics.median(values) if values else None,
+        }
+    return {
+        "benchmark_measured": {
+            "request_count": sum(r.purple_request_count for r in live),
+            "total_request_bytes": sum(r.purple_request_bytes for r in live),
+            "total_response_bytes": sum(r.purple_response_bytes for r in live),
+            "median_wall_time_sec": statistics.median(times) if times else None,
+            "cached_cases": sum(bool(r.purple_response_from_cache) for r in results),
+        },
+        "agent_declared": declared,
+        "telemetry_reported_cases": len(reported),
+        "live_cases": len(live),
+        "total_cases": len(results),
+    }
 
 
 def _slug(name):
@@ -92,7 +197,7 @@ class BenchmarkResult:
         problem_id: Unique problem ID
         compiles: Whether the code compiled successfully
         runs: Whether the code executed without errors
-        time_used_sec: Total time for generation + compilation + execution
+        purple_wall_time_sec: Wall-clock time spent waiting for the Purple Agent
         stdout: Program standard output
         stderr: Program standard error
         cli_args: Command-line arguments used for execution
@@ -107,7 +212,6 @@ class BenchmarkResult:
     problem_name: str
     problem_id: str
     runs: bool
-    time_used_sec: float
     compiles: bool
     stdout: Optional[str] = None
     stderr: Optional[str] = None
@@ -124,6 +228,14 @@ class BenchmarkResult:
     completion_tokens: Optional[int] = None
     total_tokens: Optional[int] = None
     cached_tokens: Optional[int] = None
+    # Framework-independent Purple Agent efficiency. Boundary fields are
+    # measured by Green; internal telemetry is optional and agent-declared.
+    purple_wall_time_sec: Optional[float] = None
+    purple_request_count: int = 0
+    purple_request_bytes: int = 0
+    purple_response_bytes: int = 0
+    purple_response_from_cache: bool = False
+    purple_telemetry: Optional[Dict[str, Any]] = None
     # Compilation fields
     compile_stdout: Optional[str] = None
     compile_stderr: Optional[str] = None
@@ -338,7 +450,7 @@ class Agent:
             "total": 0,
             "runs_count": 0,
             "failure_count": 0,
-            "avg_time_sec": None,
+            "avg_purple_wall_time_sec": None,
             "avg_composite_score": None,
             "tier_distribution": {"GOLD": 0, "SILVER": 0, "BRONZE": 0, "FAIL": 0},
         }
@@ -363,7 +475,6 @@ class Agent:
                 problem_name=pname,
                 problem_id=pid,
                 runs=False,
-                time_used_sec=0.0,
                 compiles=False,
             )
             generated_sources = []
@@ -378,14 +489,30 @@ class Agent:
                     print(
                         f"@@@ Green agent: Sending message to purple agent... -->\n{pdesc}"
                     )
-                    timestamp_started = time.time()
-                    purple_agent_response = await send_message(
-                        self.purple_agent_url,
-                        pdesc,
-                        context_id=pname,
-                    )
-                    br.time_used_sec = time.time() - timestamp_started
+                    def record_request_bytes(req, br=br):
+                        # The A2A request is assembled inside send_message, so
+                        # count and measure it there. Discovery failures occur
+                        # before this callback and therefore are not reported
+                        # as requests sent to the Purple Agent.
+                        br.purple_request_count = 1
+                        br.purple_request_bytes = _a2a_payload_bytes(req)
+
+                    timestamp_started = time.perf_counter()
+                    try:
+                        purple_agent_response = await send_message(
+                            self.purple_agent_url,
+                            pdesc,
+                            context_id=pname,
+                            on_request=record_request_bytes,
+                        )
+                    finally:
+                        # Failed and timed-out attempts consume real benchmark
+                        # time too, so record latency even when no response is
+                        # available.
+                        br.purple_wall_time_sec = time.perf_counter() - timestamp_started
+                    br.purple_response_bytes = _a2a_payload_bytes(purple_agent_response)
                 else:
+                    br.purple_response_from_cache = True
                     print(f"@@@ Green agent: Using cached response for {pname}")
 
                 # Cache the response
@@ -400,6 +527,7 @@ class Agent:
                     raise ValueError(f"Expected Message, got {type(res_result).__name__}")
                 text_list = get_text_parts(res_result.parts)
                 file_list = get_file_parts(res_result.parts)
+                br.purple_telemetry = _extract_purple_telemetry(res_result.parts)
                 if len(text_list) != 1:
                     raise ValueError(f"Expected exactly one text part from purple agent, got {len(text_list)}")
                 # Parse response to find code
@@ -436,6 +564,20 @@ class Agent:
                         m2 = re.search(pat, text_list[0])
                         if m2:
                             setattr(br, field, int(m2.group(1)))
+                # Prefer the versioned telemetry artifact when present, while
+                # retaining legacy text token fields during migration.
+                if br.purple_telemetry:
+                    for target, source in (
+                        ("prompt_tokens", "input_tokens"),
+                        ("completion_tokens", "output_tokens"),
+                        ("total_tokens", "total_tokens"),
+                        ("cached_tokens", "cached_tokens"),
+                    ):
+                        # Token fields are validated as whole numbers by
+                        # _extract_purple_telemetry, so no conversion here.
+                        value = br.purple_telemetry.get(source)
+                        if value is not None:
+                            setattr(br, target, value)
                 print(
                     f"@@@ Green agent: Compile and run the code generated by purple agent..."
                 )
@@ -486,8 +628,14 @@ class Agent:
             mcp_initialized = False
 
         # Final summary artifact
-        times = [r.time_used_sec for r in results]
-        summary["avg_time_sec"] = (sum(times) / len(times)) if times else None
+        times = [
+            r.purple_wall_time_sec
+            for r in results
+            if not r.purple_response_from_cache and r.purple_wall_time_sec is not None
+        ]
+        summary["avg_purple_wall_time_sec"] = (
+            sum(times) / len(times) if times else None
+        )
 
         # Calculate average evaluation score
         scores = [r.composite_score for r in results if r.composite_score is not None]
@@ -495,10 +643,12 @@ class Agent:
 
         # Token cost of code generation across the suite (metadata only).
         # prompt=input, completion=output, cached=prompt tokens served from cache.
-        summary["total_prompt_tokens"] = sum(r.prompt_tokens or 0 for r in results)
-        summary["total_completion_tokens"] = sum(r.completion_tokens or 0 for r in results)
-        summary["total_tokens"] = sum(r.total_tokens or 0 for r in results)
-        summary["total_cached_tokens"] = sum(r.cached_tokens or 0 for r in results)
+        live_results = [r for r in results if not r.purple_response_from_cache]
+        summary["total_prompt_tokens"] = sum(r.prompt_tokens or 0 for r in live_results)
+        summary["total_completion_tokens"] = sum(r.completion_tokens or 0 for r in live_results)
+        summary["total_tokens"] = sum(r.total_tokens or 0 for r in live_results)
+        summary["total_cached_tokens"] = sum(r.cached_tokens or 0 for r in live_results)
+        summary["purple_efficiency"] = _purple_efficiency_summary(results)
 
         # Save output as <model>-judge-<judge>-run<N>.json so that repeated
         # launches do not overwrite each other and each file records both the
@@ -589,7 +739,11 @@ class Agent:
                 'runs': benchmark_result.runs,
                 'stdout': benchmark_result.stdout or '',
                 'stderr': benchmark_result.stderr or '',
-                'execution_time_sec': benchmark_result.execution_time_sec or benchmark_result.time_used_sec,
+                'execution_time_sec': (
+                    benchmark_result.execution_time_sec
+                    if benchmark_result.execution_time_sec is not None
+                    else 0.0
+                ),
                 'memory_mb': None,  # TODO: Add memory tracking if available
                 'valgrind_output': benchmark_result.valgrind_output,
                 'requested_nsize': benchmark_result.requested_nsize,
@@ -661,7 +815,11 @@ class Agent:
             f"Total Problems: {summary['total']}",
             f"Successful Executions: {summary['runs_count']}",
             f"Failed Executions: {summary['failure_count']}",
-            f"Average Execution Time: {summary['avg_time_sec']:.2f}s",
+            (
+                f"Average Purple Agent Time: {summary['avg_purple_wall_time_sec']:.2f}s"
+                if summary["avg_purple_wall_time_sec"] is not None
+                else "Average Purple Agent Time: n/a"
+            ),
             "",
             f"Average Composite Score: {summary['avg_composite_score']:.1f}/100",
             "",

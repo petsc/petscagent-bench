@@ -134,7 +134,7 @@ class CodeFixTests(unittest.TestCase):
         agent = Agent.__new__(Agent)
         agent.config = {"memory_safety": {"use_valgrind": True}}
         agent.mcp_client = FakeMCPClient()
-        result = BenchmarkResult("parallel", "p1", False, 0.0, True)
+        result = BenchmarkResult("parallel", "p1", False, True)
 
         asyncio.run(agent._run_executable(result, "parallel", 3, "-ksp_type cg"))
 
@@ -144,6 +144,200 @@ class CodeFixTests(unittest.TestCase):
         self.assertEqual(agent.mcp_client.calls[0]["nsize"], 3)
         self.assertEqual(agent.mcp_client.calls[1]["nsize"], 3)
         self.assertTrue(agent.mcp_client.calls[1]["valgrind"])
+
+    def test_purple_telemetry_is_optional_structured_a2a_data(self):
+        from unittest import mock
+        from a2a.types import DataPart
+        from src.green_agent.agent import _extract_purple_telemetry
+
+        telemetry = {
+            "schema_version": "petscagent.telemetry.v1",
+            "model_calls": 3,
+            "input_tokens": 1200,
+            "cost_usd": 0.04,
+        }
+        self.assertEqual(
+            _extract_purple_telemetry([DataPart(data=telemetry)]), telemetry
+        )
+        self.assertIsNone(_extract_purple_telemetry([]))
+        with mock.patch("builtins.print") as print_mock:
+            self.assertIsNone(
+                _extract_purple_telemetry([
+                    DataPart(data={"schema_version": "petscagent.solution.v1"})
+                ])
+            )
+        print_mock.assert_not_called()
+        with mock.patch("builtins.print") as print_mock:
+            self.assertIsNone(
+                _extract_purple_telemetry([
+                    DataPart(data={"schema_version": "petscagent.telemetry.v2"})
+                ])
+            )
+        print_mock.assert_called_once()
+        self.assertEqual(
+            _extract_purple_telemetry([DataPart(data={
+                "schema_version": "petscagent.telemetry.v1",
+                "model_calls": "unknown",
+                "tool_calls": -1,
+            })]),
+            {"schema_version": "petscagent.telemetry.v1"},
+        )
+
+    def test_purple_telemetry_counts_must_be_whole_numbers(self):
+        from a2a.types import DataPart
+        from src.green_agent.agent import _extract_purple_telemetry
+
+        # A fractional count is a reporting bug, so it is dropped rather than
+        # truncated into a number that looks trustworthy. Dollar cost keeps
+        # its precision.
+        extracted = _extract_purple_telemetry([DataPart(data={
+            "schema_version": "petscagent.telemetry.v1",
+            "input_tokens": 1200.7,
+            "output_tokens": 600.0,
+            "cost_usd": 0.51,
+        })])
+        self.assertNotIn("input_tokens", extracted)
+        self.assertEqual(extracted["output_tokens"], 600)
+        self.assertIsInstance(extracted["output_tokens"], int)
+        self.assertEqual(extracted["cost_usd"], 0.51)
+
+    def test_purple_telemetry_schema_is_shared_with_the_reference_agent(self):
+        # A drift between producer and consumer looks exactly like an agent
+        # that reports nothing, so both must read the same constant.
+        from src.util.telemetry import PURPLE_TELEMETRY_SCHEMA
+        from src.green_agent import agent as green_agent
+
+        self.assertIs(green_agent.PURPLE_TELEMETRY_SCHEMA, PURPLE_TELEMETRY_SCHEMA)
+        purple_source = (
+            Path(__file__).resolve().parents[1]
+            / "src" / "purple_agent" / "petsc_agent.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn("PURPLE_TELEMETRY_SCHEMA", purple_source)
+        self.assertNotIn(f'"{PURPLE_TELEMETRY_SCHEMA}"', purple_source)
+
+    def test_purple_efficiency_summary_separates_measured_and_declared(self):
+        from src.green_agent.agent import BenchmarkResult, _purple_efficiency_summary
+
+        live = BenchmarkResult(
+            "live", "p1", True, True,
+            purple_wall_time_sec=2.0,
+            purple_request_count=1,
+            purple_request_bytes=100,
+            purple_response_bytes=500,
+            purple_telemetry={
+                "schema_version": "petscagent.telemetry.v1",
+                "model_calls": 4,
+                "cost_usd": 0.2,
+            },
+        )
+        cached = BenchmarkResult(
+            "cached", "p2", True, True,
+            purple_response_from_cache=True,
+        )
+
+        summary = _purple_efficiency_summary([live, cached])
+
+        self.assertEqual(summary["benchmark_measured"]["request_count"], 1)
+        self.assertEqual(summary["benchmark_measured"]["total_request_bytes"], 100)
+        self.assertEqual(summary["benchmark_measured"]["median_wall_time_sec"], 2.0)
+        self.assertEqual(summary["benchmark_measured"]["cached_cases"], 1)
+        self.assertEqual(summary["agent_declared"]["model_calls"]["total"], 4)
+        self.assertEqual(summary["agent_declared"]["cost_usd"]["reported_cases"], 1)
+        self.assertIsNone(summary["agent_declared"]["tool_calls"]["total"])
+        self.assertEqual(summary["live_cases"], 1)
+        self.assertEqual(summary["total_cases"], 2)
+
+    def test_cached_telemetry_is_kept_per_problem_but_not_aggregated(self):
+        from src.green_agent.agent import BenchmarkResult, _purple_efficiency_summary
+
+        # A cached response replays an earlier run's telemetry. Counting it
+        # would report generation work this run never performed.
+        cached = BenchmarkResult(
+            "cached", "p1", True, True,
+            purple_response_from_cache=True,
+            purple_telemetry={
+                "schema_version": "petscagent.telemetry.v1",
+                "model_calls": 7,
+            },
+        )
+
+        summary = _purple_efficiency_summary([cached])
+
+        self.assertIsNotNone(cached.purple_telemetry)
+        self.assertEqual(summary["telemetry_reported_cases"], 0)
+        self.assertIsNone(summary["agent_declared"]["model_calls"]["total"])
+        self.assertIsNone(summary["benchmark_measured"]["median_wall_time_sec"])
+        self.assertEqual(summary["benchmark_measured"]["cached_cases"], 1)
+        self.assertEqual(summary["live_cases"], 0)
+
+    def test_request_and_response_bytes_are_measured_identically(self):
+        from unittest import mock
+        from src.green_agent.agent import _a2a_payload_bytes
+        from src.util.a2a_comm import send_message
+
+        # The request is assembled inside send_message, so the on_request hook
+        # is what lets the caller size the same payload that goes on the wire.
+        captured = {}
+
+        class FakeClient:
+            def __init__(self, *a, **kw):
+                pass
+
+            async def send_message(self, request):
+                captured["sent"] = request
+                return request
+
+        class FakeResolver:
+            def __init__(self, *a, **kw):
+                pass
+
+            async def get_agent_card(self):
+                return object()
+
+        with mock.patch("src.util.a2a_comm.A2AClient", FakeClient), \
+             mock.patch("src.util.a2a_comm.A2ACardResolver", FakeResolver):
+            sizes = []
+            asyncio.run(send_message(
+                "http://example.invalid",
+                "describe a PETSc problem",
+                on_request=lambda req: sizes.append(_a2a_payload_bytes(req)),
+            ))
+
+        self.assertEqual(sizes, [_a2a_payload_bytes(captured["sent"])])
+        # The whole JSON-RPC envelope is measured, not just the description.
+        self.assertGreater(sizes[0], len("describe a PETSc problem"))
+
+    def test_request_callback_is_not_called_when_discovery_fails(self):
+        from unittest import mock
+        from src.util.a2a_comm import send_message
+
+        class FailingResolver:
+            def __init__(self, *a, **kw):
+                pass
+
+            async def get_agent_card(self):
+                raise RuntimeError("discovery failed")
+
+        callbacks = []
+        with mock.patch("src.util.a2a_comm.A2ACardResolver", FailingResolver):
+            with self.assertRaisesRegex(RuntimeError, "discovery failed"):
+                asyncio.run(send_message(
+                    "http://example.invalid",
+                    "describe a PETSc problem",
+                    on_request=lambda req: callbacks.append(req),
+                ))
+
+        self.assertEqual(callbacks, [])
+
+    def test_a2a_payload_measurement_never_fails_a_solution(self):
+        from src.green_agent.agent import _a2a_payload_bytes
+
+        class Unmeasurable:
+            def model_dump_json(self, **kwargs):
+                raise RuntimeError("boom")
+
+        self.assertEqual(_a2a_payload_bytes(Unmeasurable()), 0)
+        self.assertEqual(_a2a_payload_bytes(object()), 0)
 
     def test_uploaded_source_is_preserved_and_hashed(self):
         from src.green_agent.agent import Agent
