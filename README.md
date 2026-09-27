@@ -116,8 +116,10 @@ summary, per-problem results, and the provenance of the run (`purple_model`,
 `judge_model`, `run_index`) along with per-problem token counts.
 
 Each per-problem result also includes Purple Agent efficiency measured at the
-A2A boundary: request count, request/response bytes, wall-clock latency, and
-whether the response came from the cache. Request and response bytes are both
+A2A boundary: request/response bytes, response-event count, time to first
+response, total wall-clock latency, and whether the response came from the
+cache. An A2A client interceptor observes each request and response event.
+Request and response bytes are both
 measured from the canonical A2A 1.x protobuf payload, so the two are directly
 comparable. Purple Agents may additionally return a structured A2A data `Part`
 using the optional
@@ -148,6 +150,11 @@ Agent; retries hidden inside a provider or SDK are excluded unless the agent
 can observe them. `tool_calls` counts tool invocation attempts initiated by the
 Purple Agent, including failed attempts. Agents that cannot measure a field
 omit it.
+
+The included reference Purple Agent asks LiteLLM to calculate `cost_usd` from
+provider pricing metadata and reports its single call's total tokens as
+`peak_context_tokens`. If pricing is unavailable for a model or custom gateway,
+the cost field is omitted rather than estimated.
 
 The run summary reports these under `purple_efficiency`, split into
 `benchmark_measured` and `agent_declared`. Both halves cover only the cases

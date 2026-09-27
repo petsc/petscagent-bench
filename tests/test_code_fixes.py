@@ -215,15 +215,33 @@ class CodeFixTests(unittest.TestCase):
         self.assertIn("PURPLE_TELEMETRY_SCHEMA", purple_source)
         self.assertNotIn(f'"{PURPLE_TELEMETRY_SCHEMA}"', purple_source)
 
+    def test_reference_agent_reports_context_and_known_litellm_cost(self):
+        from unittest import mock
+        from src.purple_agent.petsc_agent import _build_usage_telemetry
+
+        response = SimpleNamespace(usage=SimpleNamespace(
+            prompt_tokens=120,
+            completion_tokens=30,
+            total_tokens=150,
+            cache_read_input_tokens=20,
+        ))
+        with mock.patch("litellm.completion_cost", return_value=0.0125):
+            telemetry = _build_usage_telemetry(response, "provider/model")
+
+        self.assertEqual(telemetry["peak_context_tokens"], 150)
+        self.assertEqual(telemetry["cost_usd"], 0.0125)
+
     def test_purple_efficiency_summary_separates_measured_and_declared(self):
         from src.green_agent.agent import BenchmarkResult, _purple_efficiency_summary
 
         live = BenchmarkResult(
             "live", "p1", True, True,
             purple_wall_time_sec=2.0,
+            purple_time_to_first_response_sec=0.5,
             purple_request_count=1,
             purple_request_bytes=100,
             purple_response_bytes=500,
+            purple_response_event_count=3,
             purple_telemetry={
                 "schema_version": "petscagent.telemetry.v1",
                 "model_calls": 4,
@@ -240,6 +258,10 @@ class CodeFixTests(unittest.TestCase):
         self.assertEqual(summary["benchmark_measured"]["request_count"], 1)
         self.assertEqual(summary["benchmark_measured"]["total_request_bytes"], 100)
         self.assertEqual(summary["benchmark_measured"]["median_wall_time_sec"], 2.0)
+        self.assertEqual(
+            summary["benchmark_measured"]["median_time_to_first_response_sec"], 0.5
+        )
+        self.assertEqual(summary["benchmark_measured"]["response_event_count"], 3)
         self.assertEqual(summary["benchmark_measured"]["cached_cases"], 1)
         self.assertEqual(summary["agent_declared"]["model_calls"]["total"], 4)
         self.assertEqual(summary["agent_declared"]["cost_usd"]["reported_cases"], 1)
@@ -298,24 +320,32 @@ class CodeFixTests(unittest.TestCase):
 
     def test_request_and_response_bytes_are_measured_identically(self):
         from unittest import mock
+        from a2a.types.a2a_pb2 import StreamResponse
         from src.green_agent.agent import _a2a_payload_bytes
         from src.util.a2a_comm import send_message
+        from src.util.a2a_v1 import new_agent_text_message
 
         # The request is assembled inside send_message, so the on_request hook
         # is what lets the caller size the same payload that goes on the wire.
         captured = {}
 
         class FakeClient:
+            def __init__(self, interceptor):
+                self.interceptor = interceptor
+
             async def send_message(self, request):
                 captured["sent"] = request
-                yield request
+                await self.interceptor.before(SimpleNamespace(input=request))
+                response = StreamResponse(message=new_agent_text_message("done"))
+                await self.interceptor.after(SimpleNamespace(result=response))
+                yield response
 
         class FakeFactory:
             def __init__(self, *a, **kw):
                 pass
 
-            def create(self, card):
-                return FakeClient()
+            def create(self, card, interceptors):
+                return FakeClient(interceptors[0])
 
         class FakeResolver:
             def __init__(self, *a, **kw):
@@ -326,16 +356,22 @@ class CodeFixTests(unittest.TestCase):
 
         with mock.patch("src.util.a2a_comm.ClientFactory", FakeFactory), \
              mock.patch("src.util.a2a_comm.A2ACardResolver", FakeResolver):
-            sizes = []
+            observed = []
             asyncio.run(send_message(
                 "http://example.invalid",
                 "describe a PETSc problem",
-                on_request=lambda req: sizes.append(_a2a_payload_bytes(req)),
+                on_metrics=observed.append,
             ))
 
-        self.assertEqual(sizes, [_a2a_payload_bytes(captured["sent"])])
-        # The whole JSON-RPC envelope is measured, not just the description.
-        self.assertGreater(sizes[0], len("describe a PETSc problem"))
+        self.assertEqual(
+            observed[0].request_bytes, _a2a_payload_bytes(captured["sent"])
+        )
+        self.assertEqual(observed[0].request_count, 1)
+        self.assertEqual(observed[0].response_event_count, 1)
+        self.assertGreater(observed[0].response_bytes, 0)
+        self.assertIsNotNone(observed[0].time_to_first_response_sec)
+        # The whole protobuf request is measured, not just the description.
+        self.assertGreater(observed[0].request_bytes, len("describe a PETSc problem"))
 
     def test_request_callback_is_not_called_when_discovery_fails(self):
         from unittest import mock
@@ -354,7 +390,7 @@ class CodeFixTests(unittest.TestCase):
                 asyncio.run(send_message(
                     "http://example.invalid",
                     "describe a PETSc problem",
-                    on_request=lambda req: callbacks.append(req),
+                    on_metrics=callbacks.append,
                 ))
 
         self.assertEqual(callbacks, [])

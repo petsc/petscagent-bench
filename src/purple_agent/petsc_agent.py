@@ -17,6 +17,7 @@ import uvicorn
 import dotenv
 import os
 import json
+import math
 from a2a.server.request_handlers import DefaultRequestHandler
 from a2a.server.routes import create_agent_card_routes, create_jsonrpc_routes
 from a2a.server.agent_execution import AgentExecutor, RequestContext
@@ -37,6 +38,42 @@ from pathlib import Path
 from src.util.telemetry import PURPLE_TELEMETRY_SCHEMA
 
 dotenv.load_dotenv()
+
+
+def _build_usage_telemetry(response: Any, model: str) -> Dict[str, Any]:
+    """Build optional telemetry for the reference Purple Agent's model call."""
+    telemetry: Dict[str, Any] = {
+        "schema_version": PURPLE_TELEMETRY_SCHEMA,
+        "model_calls": 1,
+        "tool_calls": 0,
+    }
+    try:
+        usage = response.usage
+        cached = getattr(usage, "cache_read_input_tokens", None)
+        if cached is None:
+            details = getattr(usage, "prompt_tokens_details", None)
+            cached = getattr(details, "cached_tokens", None) if details else None
+        total = getattr(
+            usage, "total_tokens", usage.prompt_tokens + usage.completion_tokens
+        )
+        telemetry.update({
+            "input_tokens": usage.prompt_tokens,
+            "output_tokens": usage.completion_tokens,
+            "total_tokens": total,
+            "cached_tokens": cached or 0,
+            "peak_context_tokens": total,
+        })
+    except Exception:
+        pass
+    try:
+        cost = litellm.completion_cost(completion_response=response, model=model)
+        if isinstance(cost, (int, float)) and math.isfinite(cost) and cost >= 0:
+            telemetry["cost_usd"] = float(cost)
+    except Exception:
+        # Custom gateways and newly released models may not have a LiteLLM
+        # price mapping. Cost remains optional in that case.
+        pass
+    return telemetry
 
 # System prompt that defines the code generation contract
 # This ensures the LLM produces output in a structured, parseable format
@@ -259,32 +296,9 @@ class PetscAgentExecutor(AgentExecutor):
             # part. Green still understands legacy token lines from older
             # agents and cached responses, but this agent emits one source of
             # truth.
-            telemetry = {
-                "schema_version": PURPLE_TELEMETRY_SCHEMA,
-                # One completion and no tools. litellm may retry or fall back
-                # internally, so this counts the calls the agent made, not the
-                # calls that reached a provider.
-                "model_calls": 1,
-                "tool_calls": 0,
-            }
-            try:
-                u = response.usage
-                # cached_tokens is reported in different places by different
-                # providers, so check both and fall back to 0.
-                cached = getattr(u, "cache_read_input_tokens", None)
-                if cached is None:
-                    details = getattr(u, "prompt_tokens_details", None)
-                    cached = getattr(details, "cached_tokens", None) if details else None
-                telemetry.update({
-                    "input_tokens": u.prompt_tokens,
-                    "output_tokens": u.completion_tokens,
-                    "total_tokens": getattr(
-                        u, "total_tokens", u.prompt_tokens + u.completion_tokens
-                    ),
-                    "cached_tokens": cached or 0,
-                })
-            except Exception:
-                pass
+            # One completion and no tools. LiteLLM may retry internally, so
+            # this counts calls initiated by this agent, not provider retries.
+            telemetry = _build_usage_telemetry(response, self.model)
             parts_list = [
                 new_text_part(f"Code generation successful ✅\nnsize: {nsize}\ncli_args: {cli_args}\n"),
                 new_data_part(telemetry),

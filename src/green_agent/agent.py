@@ -123,6 +123,11 @@ def _purple_efficiency_summary(
     """
     live = [r for r in results if not r.purple_response_from_cache]
     times = [r.purple_wall_time_sec for r in live if r.purple_wall_time_sec is not None]
+    first_response_times = [
+        r.purple_time_to_first_response_sec
+        for r in live
+        if r.purple_time_to_first_response_sec is not None
+    ]
     reported = [r.purple_telemetry for r in live if r.purple_telemetry is not None]
     scores = [r.efficiency_score for r in live if r.efficiency_score is not None]
     efficiency_config = efficiency_config or {}
@@ -140,6 +145,10 @@ def _purple_efficiency_summary(
             "total_request_bytes": sum(r.purple_request_bytes for r in live),
             "total_response_bytes": sum(r.purple_response_bytes for r in live),
             "median_wall_time_sec": statistics.median(times) if times else None,
+            "median_time_to_first_response_sec": (
+                statistics.median(first_response_times) if first_response_times else None
+            ),
+            "response_event_count": sum(r.purple_response_event_count for r in live),
             "average_efficiency_score": sum(scores) / len(scores) if scores else None,
             "cached_cases": sum(bool(r.purple_response_from_cache) for r in results),
         },
@@ -262,9 +271,11 @@ class BenchmarkResult:
     # Framework-independent Purple Agent efficiency. Boundary fields are
     # measured by Green; internal telemetry is optional and agent-declared.
     purple_wall_time_sec: Optional[float] = None
+    purple_time_to_first_response_sec: Optional[float] = None
     purple_request_count: int = 0
     purple_request_bytes: int = 0
     purple_response_bytes: int = 0
+    purple_response_event_count: int = 0
     purple_response_from_cache: bool = False
     purple_telemetry: Optional[Dict[str, Any]] = None
     efficiency_score: Optional[float] = None
@@ -519,28 +530,22 @@ class Agent:
                     print(
                         f"@@@ Green agent: Sending message to purple agent... -->\n{pdesc}"
                     )
-                    def record_request_bytes(req, br=br):
-                        # The A2A request is assembled inside send_message, so
-                        # count and measure it there. Discovery failures occur
-                        # before this callback and therefore are not reported
-                        # as requests sent to the Purple Agent.
-                        br.purple_request_count = 1
-                        br.purple_request_bytes = _a2a_payload_bytes(req)
-
-                    timestamp_started = time.perf_counter()
-                    try:
-                        purple_agent_response = await send_message(
-                            self.purple_agent_url,
-                            pdesc,
-                            context_id=pname,
-                            on_request=record_request_bytes,
+                    def record_boundary_metrics(metrics, br=br):
+                        br.purple_request_count = metrics.request_count
+                        br.purple_request_bytes = metrics.request_bytes
+                        br.purple_response_bytes = metrics.response_bytes
+                        br.purple_response_event_count = metrics.response_event_count
+                        br.purple_time_to_first_response_sec = (
+                            metrics.time_to_first_response_sec
                         )
-                    finally:
-                        # Failed and timed-out attempts consume real benchmark
-                        # time too, so record latency even when no response is
-                        # available.
-                        br.purple_wall_time_sec = time.perf_counter() - timestamp_started
-                    br.purple_response_bytes = _a2a_payload_bytes(purple_agent_response)
+                        br.purple_wall_time_sec = metrics.wall_time_sec
+
+                    purple_agent_response = await send_message(
+                        self.purple_agent_url,
+                        pdesc,
+                        context_id=pname,
+                        on_metrics=record_boundary_metrics,
+                    )
                 else:
                     br.purple_response_from_cache = True
                     print(f"@@@ Green agent: Using cached response for {pname}")

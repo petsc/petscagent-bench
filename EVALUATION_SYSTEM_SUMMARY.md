@@ -463,11 +463,17 @@ loaded by the A2A 1.x implementation.
 ## Purple Agent Efficiency
 
 Green records framework-independent observations at the A2A boundary for each
-live problem: request count, request and response payload sizes, and wall-clock
-latency. Purple may additionally declare model calls, tool calls, token usage,
-peak context size, and dollar cost in a `petscagent.telemetry.v1` data `Part`.
+live problem: request and response payload sizes, response-event count, time to
+first response, and total wall-clock latency. An A2A client interceptor records
+each event from agents that support streaming. Purple may additionally declare
+model calls, tool calls, token usage, peak context size, and dollar cost in a
+`petscagent.telemetry.v1` data `Part`.
 Those internal fields are optional because Green does not assume anything
 about the Purple Agent's framework or orchestration.
+
+The reference Purple Agent asks LiteLLM to calculate `cost_usd` from provider
+pricing metadata and uses the single model call's total tokens as its peak
+context. Unknown model or custom-gateway prices are left unavailable.
 
 Successful live problems receive a separate budget-based `efficiency_score`.
 Failed live problems receive zero and cached problems receive no efficiency

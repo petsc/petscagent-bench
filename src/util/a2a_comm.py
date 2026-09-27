@@ -12,12 +12,57 @@ allowing them to discover capabilities and exchange messages reliably.
 import httpx
 import asyncio
 import uuid
+import time
+from dataclasses import dataclass
 
 import re
 from typing import Dict
 
 from a2a.client import A2ACardResolver, ClientConfig, ClientFactory
-from src.util.a2a_v1 import AgentCard, Message, Role, SendMessageRequest, StreamResponse, new_text_part
+from a2a.client.interceptors import ClientCallInterceptor
+from src.util.a2a_v1 import (
+    AgentCard, Message, Role, SendMessageRequest, StreamResponse,
+    new_text_part, protobuf_size,
+)
+
+
+@dataclass
+class A2ACallMetrics:
+    """Green-observed metrics for one A2A message call."""
+
+    request_count: int = 0
+    request_bytes: int = 0
+    response_bytes: int = 0
+    response_event_count: int = 0
+    time_to_first_response_sec: float | None = None
+    wall_time_sec: float | None = None
+
+
+class BoundaryMetricsInterceptor(ClientCallInterceptor):
+    """Measure calls at the SDK boundary without depending on agent internals."""
+
+    def __init__(self) -> None:
+        self.metrics = A2ACallMetrics()
+        self._started: float | None = None
+
+    async def before(self, args) -> None:
+        self._started = time.perf_counter()
+        self.metrics.request_count += 1
+        self.metrics.request_bytes += protobuf_size(args.input)
+
+    async def after(self, args) -> None:
+        now = time.perf_counter()
+        if self.metrics.time_to_first_response_sec is None and self._started is not None:
+            self.metrics.time_to_first_response_sec = now - self._started
+        self.metrics.response_event_count += 1
+        self.metrics.response_bytes += protobuf_size(args.result)
+        if self._started is not None:
+            self.metrics.wall_time_sec = now - self._started
+
+    def finish(self) -> None:
+        """Capture elapsed time when a call fails before yielding a response."""
+        if self._started is not None:
+            self.metrics.wall_time_sec = time.perf_counter() - self._started
 
 
 async def get_agent_card(url: str) -> AgentCard | None:
@@ -77,7 +122,7 @@ async def wait_agent_ready(url, timeout=10):
 
 
 async def send_message(
-    url, message, task_id=None, context_id=None, on_request=None
+    url, message, task_id=None, context_id=None, on_metrics=None
 ) -> StreamResponse:
     """Send a message to an A2A-compliant agent.
 
@@ -92,10 +137,8 @@ async def send_message(
         message: Text message to send to the agent
         task_id: Optional task identifier for message threading (default: None)
         context_id: Optional context identifier for maintaining conversation state (default: None)
-        on_request: Optional callback invoked with the fully built
-            SendMessageRequest just before it is sent. Callers use it to
-            measure the outgoing payload, which is assembled here rather than
-            by the caller (default: None)
+        on_metrics: Optional callback invoked with Green-observed boundary
+            metrics after the response stream finishes.
 
     Returns:
         Final StreamResponse containing the agent's response
@@ -111,9 +154,10 @@ async def send_message(
         resolver = A2ACardResolver(httpx_client=httpx_client, base_url=url)
         card = await resolver.get_agent_card()
 
+        metrics = BoundaryMetricsInterceptor()
         client = ClientFactory(ClientConfig(
-            streaming=False, httpx_client=httpx_client
-        )).create(card)
+            streaming=True, httpx_client=httpx_client
+        )).create(card, interceptors=[metrics])
 
         # Generate unique message ID for tracking
         message_id = uuid.uuid4().hex
@@ -128,14 +172,16 @@ async def send_message(
                 context_id=context_id or "",
             ),
         )
-        if on_request is not None:
-            on_request(req)
-
         response = None
-        async for event in client.send_message(request=req):
-            response = event
-        if response is None:
-            raise RuntimeError("Purple Agent returned no A2A response")
+        try:
+            async for event in client.send_message(request=req):
+                response = event
+            if response is None:
+                raise RuntimeError("Purple Agent returned no A2A response")
+        finally:
+            if on_metrics is not None and metrics.metrics.request_count:
+                metrics.finish()
+                on_metrics(metrics.metrics)
         return response
     finally:
         await httpx_client.aclose()
