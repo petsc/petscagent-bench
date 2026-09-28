@@ -107,8 +107,8 @@ Each problem is evaluated across multiple dimensions (see `config/green_agent_co
 
 The Green Agent writes one file per run to `output/`, named after the model under test and the judge used to score it:
 
-- `output/<model>-judge-<judge>-run<N>.json`, for example
-  `output/claudeopus46-judge-gpt52-run1.json`
+- `output/<purple_model>-judged-by-<green_model>-run<N>.json`, for example
+  `output/gpt52-judged-by-claudeopus46-run1.json`
 
 The run index is incremented automatically, so repeated runs of the same
 model/judge pair do not overwrite each other. Each file contains the overall
@@ -399,4 +399,4 @@ Legacy `.pkl` caches from the A2A 0.3 implementation are not reused.
 ## Release history
 
 See [CHANGELOG.md](CHANGELOG.md) for release notes.
-6. **Missing output files**: Only the per-run `output/<model>-judge-<judge>-run<N>.json` file is written to disk by default; other reports are emitted as task artifacts.
+6. **Missing output files**: Only the per-run `output/<purple_model>-judged-by-<green_model>-run<N>.json` file is written to disk by default; other reports are emitted as task artifacts.

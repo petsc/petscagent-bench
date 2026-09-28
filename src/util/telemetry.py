@@ -18,6 +18,13 @@ PURPLE_TELEMETRY_FIELDS = (
     "peak_context_tokens", "cost_usd",
 )
 
+# Optional identity string the agent self-reports (NOT an aggregated metric): the
+# model name to record for this run. The Green Agent uses it to name the output
+# file, so a composite agent can encode its configuration too, e.g. a pde-sim
+# binding reports "pdesim-<model>-c<N>". When absent, Green falls back to the
+# purple_model task tag, then to "unknown".
+PURPLE_TELEMETRY_MODEL_FIELD = "model"
+
 # Fields that count discrete events and must therefore arrive as whole
 # numbers. A fractional count is a reporting bug in the agent, so the value is
 # dropped rather than truncated into a plausible looking number.
