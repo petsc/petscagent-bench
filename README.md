@@ -128,6 +128,7 @@ using the optional
 ```json
 {
   "schema_version": "petscagent.telemetry.v1",
+  "model": "pdesim-gpt-5.2-c3",
   "model_calls": 5,
   "tool_calls": 8,
   "input_tokens": 24000,
@@ -143,7 +144,18 @@ All fields except `schema_version` are optional. These internal values are
 agent-declared because the Green Agent cannot independently observe an agent's
 framework, model calls, context, tools, or provider billing. Missing values are
 reported as unavailable rather than zero and do not affect the quality score.
-Every field except `cost_usd` counts discrete events and must
+
+`model` is an identity string rather than a metric. It is the name the agent
+wants recorded for this run, and the Green Agent uses it to name the output
+file, so a composite agent can encode its own configuration. When it is absent
+Green falls back to the `purple_model` tag the run was launched with. The
+launched tag is recorded as `purple_model` in the result file either way, and
+the self-reported name appears alongside it as `reported_model`. A value that
+is not a non-empty string is dropped. A self-reported name from a cached
+response is ignored, because a cached response replays the telemetry of the
+run that filled the cache.
+
+Every other field except `cost_usd` counts discrete events and must
 be a whole number; fractional, negative, or non-numeric values are dropped.
 `model_calls` counts logical model invocation attempts initiated by the Purple
 Agent; retries hidden inside a provider or SDK are excluded unless the agent

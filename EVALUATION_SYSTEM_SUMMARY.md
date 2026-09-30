@@ -404,6 +404,10 @@ The Green Agent writes a JSON file with this top-level structure:
 ```json
 {
   "agent": "<purple_id>",
+  "purple_model": "<purple_model>",
+  "reported_model": "<self-reported model, or null>",
+  "judge_model": "<green_model>",
+  "run_index": 1,
   "summary": { /* ... */ },
   "results": [ /* ... */ ]
 }
@@ -412,6 +416,11 @@ The Green Agent writes a JSON file with this top-level structure:
 Notes:
 
 - `agent` is populated from the `<purple_id>` tag passed to the Green Agent.
+- `purple_model` is the tag the run was launched with, so the record always
+  states what was configured.
+- `reported_model` is the optional `model` string the Purple Agent declared in
+  its telemetry, or `null` when it declared none. It names the output file when
+  present, but does not replace `purple_model`.
 - Each entry in `results` contains execution fields plus evaluation fields.
 
 ### Detailed evaluation report (`evaluation_detailed_report.json`)
@@ -467,7 +476,8 @@ live problem: request and response payload sizes, response-event count, time to
 first response, and total wall-clock latency. An A2A client interceptor records
 each event from agents that support streaming. Purple may additionally declare
 model calls, tool calls, token usage, peak context size, and dollar cost in a
-`petscagent.telemetry.v1` data `Part`.
+`petscagent.telemetry.v1` data `Part`, along with an optional `model` identity
+string naming itself for this run, which Green uses to name the output file.
 Those internal fields are optional because Green does not assume anything
 about the Purple Agent's framework or orchestration.
 
