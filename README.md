@@ -107,8 +107,8 @@ Each problem is evaluated across multiple dimensions (see `config/green_agent_co
 
 The Green Agent writes one file per run to `output/`, named after the model under test and the judge used to score it:
 
-- `output/<model>-judge-<judge>-run<N>.json`, for example
-  `output/claudeopus46-judge-gpt52-run1.json`
+- `output/<purple_model>-judged-by-<green_model>-run<N>.json`, for example
+  `output/gpt52-judged-by-claudeopus46-run1.json`
 
 The run index is incremented automatically, so repeated runs of the same
 model/judge pair do not overwrite each other. Each file contains the overall
@@ -128,6 +128,7 @@ using the optional
 ```json
 {
   "schema_version": "petscagent.telemetry.v1",
+  "model": "pdesim-gpt-5.2-c3",
   "model_calls": 5,
   "tool_calls": 8,
   "input_tokens": 24000,
@@ -143,7 +144,18 @@ All fields except `schema_version` are optional. These internal values are
 agent-declared because the Green Agent cannot independently observe an agent's
 framework, model calls, context, tools, or provider billing. Missing values are
 reported as unavailable rather than zero and do not affect the quality score.
-Every field except `cost_usd` counts discrete events and must
+
+`model` is an identity string rather than a metric. It is the name the agent
+wants recorded for this run, and the Green Agent uses it to name the output
+file, so a composite agent can encode its own configuration. When it is absent
+Green falls back to the `purple_model` tag the run was launched with. The
+launched tag is recorded as `purple_model` in the result file either way, and
+the self-reported name appears alongside it as `reported_model`. A value that
+is not a non-empty string is dropped. A self-reported name from a cached
+response is ignored, because a cached response replays the telemetry of the
+run that filled the cache.
+
+Every other field except `cost_usd` counts discrete events and must
 be a whole number; fractional, negative, or non-numeric values are dropped.
 `model_calls` counts logical model invocation attempts initiated by the Purple
 Agent; retries hidden inside a provider or SDK are excluded unless the agent
@@ -399,4 +411,4 @@ Legacy `.pkl` caches from the A2A 0.3 implementation are not reused.
 ## Release history
 
 See [CHANGELOG.md](CHANGELOG.md) for release notes.
-6. **Missing output files**: Only the per-run `output/<model>-judge-<judge>-run<N>.json` file is written to disk by default; other reports are emitted as task artifacts.
+6. **Missing output files**: Only the per-run `output/<purple_model>-judged-by-<green_model>-run<N>.json` file is written to disk by default; other reports are emitted as task artifacts.

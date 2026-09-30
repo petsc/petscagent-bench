@@ -295,6 +295,53 @@ class CodeFixTests(unittest.TestCase):
         self.assertEqual(_calculate_efficiency_score(failed, config), 0.0)
         self.assertIsNone(_calculate_efficiency_score(cached, config))
 
+    def test_self_reported_model_is_an_identity_not_a_counted_metric(self):
+        from a2a.helpers.proto_helpers import new_data_part
+        from src.green_agent.agent import _extract_purple_telemetry
+
+        extracted = _extract_purple_telemetry([new_data_part({
+            "schema_version": "petscagent.telemetry.v1",
+            "model": "  pdesim-gpt5-c3  ",
+            "model_calls": 2,
+        })])
+        self.assertEqual(extracted["model"], "pdesim-gpt5-c3")
+
+        # An identity is a string, so the whole-number rule that governs the
+        # counted fields does not apply to it, and a non-string is dropped.
+        for bad in (5, 1.5, None, "", "   "):
+            self.assertNotIn("model", _extract_purple_telemetry([new_data_part({
+                "schema_version": "petscagent.telemetry.v1",
+                "model": bad,
+            })]))
+
+    def test_reported_model_ignores_cached_telemetry(self):
+        from src.green_agent.agent import BenchmarkResult, _reported_model
+
+        # A cached response replays an earlier run's telemetry, so the model it
+        # names is the one that filled the cache, not the one under test. The
+        # cache key is built from the configured purple_model tag, so a
+        # reconfigured agent hits the same cache and would otherwise write its
+        # results under the label it replaced.
+        cached = BenchmarkResult(
+            "cached", "p1", True, True,
+            purple_response_from_cache=True,
+            purple_telemetry={
+                "schema_version": "petscagent.telemetry.v1",
+                "model": "pdesim-gpt5-c1",
+            },
+        )
+        live = BenchmarkResult(
+            "live", "p2", True, True,
+            purple_telemetry={
+                "schema_version": "petscagent.telemetry.v1",
+                "model": "pdesim-gpt5-c2",
+            },
+        )
+
+        self.assertIsNone(_reported_model([]))
+        self.assertIsNone(_reported_model([cached]))
+        self.assertEqual(_reported_model([cached, live]), "pdesim-gpt5-c2")
+
     def test_cached_telemetry_is_kept_per_problem_but_not_aggregated(self):
         from src.green_agent.agent import BenchmarkResult, _purple_efficiency_summary
 

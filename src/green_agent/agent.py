@@ -32,6 +32,7 @@ from src.util.a2a_comm import send_message
 from src.util.telemetry import (
     PURPLE_TELEMETRY_FIELDS,
     PURPLE_TELEMETRY_INTEGER_FIELDS,
+    PURPLE_TELEMETRY_MODEL_FIELD,
     PURPLE_TELEMETRY_SCHEMA,
 )
 from pathlib import Path
@@ -94,6 +95,11 @@ def _extract_purple_telemetry(parts: List[Any]) -> Optional[Dict[str, Any]]:
                     continue
                 metric = int(metric)
             telemetry[field] = metric
+        # Optional self-reported model name (a string, not an aggregated metric)
+        # that the agent wants recorded for this run; used for output naming.
+        model = data.get(PURPLE_TELEMETRY_MODEL_FIELD)
+        if isinstance(model, str) and model.strip():
+            telemetry[PURPLE_TELEMETRY_MODEL_FIELD] = model.strip()
         return telemetry
     return None
 
@@ -191,9 +197,36 @@ def _calculate_efficiency_score(
     return round(100.0 * math.sqrt(time_score * byte_score), 2)
 
 
+def _reported_model(results):
+    """The model a Purple Agent self-reported for this run, or None.
+
+    Only live results are considered. A cached response replays the telemetry
+    of an earlier run, so the model string it carries names that run rather
+    than this one. This is the same reason cached results are excluded from
+    _purple_efficiency_summary and _calculate_efficiency_score. The cache key
+    is built from the configured purple_model tag, not from the self-reported
+    name, so without this filter a reconfigured agent whose problems all hit
+    the cache would be labelled with the configuration it replaced.
+    """
+    for result in results:
+        if result.purple_response_from_cache or not result.purple_telemetry:
+            continue
+        model = result.purple_telemetry.get(PURPLE_TELEMETRY_MODEL_FIELD)
+        if model:
+            return model
+    return None
+
+
 def _slug(name):
     """Filename-safe short form of a model identifier."""
     return re.sub(r"[^a-z0-9]+", "", (name or "unknown").lower().split("/")[-1])
+
+
+def _name_slug(name):
+    """Filename-safe form that KEEPS hyphens, so a composite label such as
+    ``pdesim-<model>-c<N>`` stays readable in the output filename instead of
+    collapsing to ``pdesim<model>c<N>``. Other punctuation is dropped."""
+    return re.sub(r"[^a-z0-9-]+", "", (name or "unknown").lower().split("/")[-1]).strip("-") or "unknown"
 
 
 def read_from_json(path):
@@ -692,15 +725,19 @@ class Agent:
             results, self.config.get("scoring", {}).get("efficiency", {})
         )
 
-        # Save output as <model>-judge-<judge>-run<N>.json so that repeated
-        # launches do not overwrite each other and each file records both the
-        # model under test and the judge that scored it.
+        # Save output as <purple_model>-judged-by-<green_model>-run<N>.json so that
+        # repeated launches do not overwrite each other. Prefer the model the Purple
+        # self-reported in its telemetry (so a composite agent can label itself, e.g.
+        # "pdesim-<model>-c<N>"), falling back to the purple_model task tag.
+        reported_model = _reported_model(results)
+        effective_model = reported_model or self.purple_model
         output_dir = Path("output")
         output_dir.mkdir(exist_ok=True)
 
-        model_slug = _slug(self.purple_model)
-        judge_slug = _slug(self.model)
-        prefix = f"{model_slug}-judge-{judge_slug}"
+        # _name_slug keeps hyphens so a composite label stays readable.
+        model_slug = _name_slug(effective_model)
+        judge_slug = _name_slug(self.model)
+        prefix = f"{model_slug}-judged-by-{judge_slug}"
         used = [
             int(m.group(1))
             for p in output_dir.glob(f"{prefix}-run*.json")
@@ -711,7 +748,12 @@ class Agent:
         local_path = output_dir / filename
         json_data = {
             "agent": self.purple_id,
+            # purple_model is the tag the run was launched with, so the record
+            # always states what was configured. reported_model is what the
+            # agent said about itself, which names the file but is not a
+            # substitute for the configured value.
             "purple_model": self.purple_model,
+            "reported_model": reported_model,
             "judge_model": self.model,
             "run_index": run_index,
             "summary": summary,

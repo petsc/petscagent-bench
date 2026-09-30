@@ -397,13 +397,17 @@ PER-PROBLEM RESULTS
    Correctness: 75.0, Performance: 65.0, Code Quality: 60.0
 ```
 
-### JSON output (`output/<model>-judge-<judge>-run<N>.json`)
+### JSON output (`output/<purple_model>-judged-by-<green_model>-run<N>.json`)
 
 The Green Agent writes a JSON file with this top-level structure:
 
 ```json
 {
   "agent": "<purple_id>",
+  "purple_model": "<purple_model>",
+  "reported_model": "<self-reported model, or null>",
+  "judge_model": "<green_model>",
+  "run_index": 1,
   "summary": { /* ... */ },
   "results": [ /* ... */ ]
 }
@@ -412,6 +416,11 @@ The Green Agent writes a JSON file with this top-level structure:
 Notes:
 
 - `agent` is populated from the `<purple_id>` tag passed to the Green Agent.
+- `purple_model` is the tag the run was launched with, so the record always
+  states what was configured.
+- `reported_model` is the optional `model` string the Purple Agent declared in
+  its telemetry, or `null` when it declared none. It names the output file when
+  present, but does not replace `purple_model`.
 - Each entry in `results` contains execution fields plus evaluation fields.
 
 ### Detailed evaluation report (`evaluation_detailed_report.json`)
@@ -467,7 +476,8 @@ live problem: request and response payload sizes, response-event count, time to
 first response, and total wall-clock latency. An A2A client interceptor records
 each event from agents that support streaming. Purple may additionally declare
 model calls, tool calls, token usage, peak context size, and dollar cost in a
-`petscagent.telemetry.v1` data `Part`.
+`petscagent.telemetry.v1` data `Part`, along with an optional `model` identity
+string naming itself for this run, which Green uses to name the output file.
 Those internal fields are optional because Green does not assume anything
 about the Purple Agent's framework or orchestration.
 
@@ -661,12 +671,12 @@ config/
 
 ```
 output/
-└── <model>-judge-<judge>-run<N>.json
+└── <purple_model>-judged-by-<green_model>-run<N>.json
 ```
 
 **Emitted as task artifacts** (via `TaskUpdater.add_artifact`):
 
-- `<model>-judge-<judge>-run<N>.json`
+- `<purple_model>-judged-by-<green_model>-run<N>.json`
 - `evaluation_report.txt`
 - `evaluation_detailed_report.json`
 - `benchmark_result_<problem_name>.json`
@@ -683,5 +693,5 @@ purple_agent_cache/
 - ✅ Implemented with 14 evaluators (when all phases are enabled)
 - ✅ Integrated into the Green Agent benchmarking pipeline
 - ✅ Configurable via `config/green_agent_config.yaml`
-- ✅ Emits summary results to disk (`output/<model>-judge-<judge>-run<N>.json`) and additional reports as task artifacts
+- ✅ Emits summary results to disk (`output/<purple_model>-judged-by-<green_model>-run<N>.json`) and additional reports as task artifacts
 - ✅ Supports caching of Purple Agent responses (`purple_agent_cache/`)
