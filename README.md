@@ -290,6 +290,18 @@ Once the Green Agent, Purple Agent, and MCP server are running, trigger a benchm
 uv run src/client_cli.py --green-url <GREEN_URL> --purple-url <PURPLE_URL> --mcp-server-url <MCP_URL>
 ```
 
+### Benchmarking an external agent
+
+To evaluate an agent you start yourself, point `launch` at it. The Green Agent and MCP server are started and stopped as usual; your agent is left running.
+
+```bash
+uv run main.py launch --purple-url http://localhost:9002
+```
+
+Your agent names its own output file by self-reporting a `model` in its telemetry.
+Without one the run is filed as `unknown-...`.
+
+Set `A2A_READ_TIMEOUT=0` if the agent needs more than 3000s for the whole suite, otherwise the client discards the finished run.
 
 ### Configuration
 

@@ -63,7 +63,7 @@ def run_purple_agent(agent_llm, api_base_url=None):
     # asyncio.run(start_purple_agent(agent_llm="openai/google-claude-45-opus")) # test AskSage
 
 
-async def launch_evaluation():
+async def launch_evaluation(purple_url=None):
     """Main launcher function - initiates and coordinates the evaluation process.
     
     This function orchestrates the complete benchmark workflow:
@@ -89,55 +89,80 @@ async def launch_evaluation():
     The evaluation results are automatically saved by the Green Agent
     to the 'output/' directory.
     
+    Args:
+        purple_url: Evaluate this already-running agent instead of starting the
+            built-in purple. Its lifetime belongs to the caller. Such an agent
+            names its own output file by self-reporting a model in its
+            telemetry, otherwise the run is filed as "unknown".
+
     Raises:
         AssertionError: If any agent fails to become ready within timeout
         Exception: If communication or execution errors occur
     """
     # Define service endpoints
     green_url = "http://localhost:9001"    # Green Agent A2A server
-    purple_url = "http://localhost:9002"   # Purple Agent A2A server
     mcp_server_url = "http://localhost:8080/mcp"  # MCP tools server
     green_id = "019bb856-c8bf-7390-8c4f-bced52276932" # AgentBeats ID
     purple_id = ""
+
+    external_purple = purple_url is not None
+    purple_url = purple_url or "http://localhost:9002"
+    # Empty for an external agent, which names itself by self-reporting a model.
+    purple_model = ""
 
     green_cfg = load_green_agent_config()
     green_llm_cfg = green_cfg.get('evaluation', {}).get('llm', {})
     green_model = green_llm_cfg.get('model', 'openai/gpt-4o-mini')
     green_api_base_url = green_llm_cfg.get('api_base_url')
 
-    purple_cfg = load_purple_agent_config()
-    purple_llm_cfg = purple_cfg.get('llm')
-    purple_model = purple_llm_cfg.get('model', 'openai/gpt-4o-mini')
-    purple_api_base_url = purple_llm_cfg.get('api_base_url')
-    # Step 1: Start Green Agent (assessment manager)
-    print("Launching green agent...")
-    p_green = multiprocessing.Process(target=run_green_agent, args=(green_model, green_api_base_url))
-    p_green.start()
-    assert await wait_agent_ready(green_url), "Green agent not ready in time"
-    print("Green agent is ready.")
+    if not external_purple:
+        purple_cfg = load_purple_agent_config()
+        purple_llm_cfg = purple_cfg.get('llm')
+        purple_model = purple_llm_cfg.get('model', 'openai/gpt-4o-mini')
+        purple_api_base_url = purple_llm_cfg.get('api_base_url')
 
-    # Step 2: Start Purple Agent (code generator being tested)
-    print("Launching purple agent...")
-    p_purple = multiprocessing.Process(target=run_purple_agent, args=(purple_model, purple_api_base_url))
-    p_purple.start()
-    assert await wait_agent_ready(purple_url), "purple agent not ready in time"
-    print("purple agent is ready.")
+    # Everything we start goes in here so the finally below can reap it. These
+    # are non-daemon children, so a failure that skips cleanup does not just
+    # leak ports: the interpreter blocks forever joining them at exit.
+    started = []
+    try:
+        # Step 1: Start Green Agent (assessment manager)
+        print("Launching green agent...")
+        p_green = multiprocessing.Process(target=run_green_agent, args=(green_model, green_api_base_url))
+        p_green.start()
+        started.append(p_green)
+        assert await wait_agent_ready(green_url), "Green agent not ready in time"
+        print("Green agent is ready.")
 
-    # Step 3: Start MCP server (provides PETSc compilation/execution tools)
-    print("Launching MCP server for green agent...")
-    petsc_mcp_server = multiprocessing.Process(target=start_mcp_server)
-    petsc_mcp_server.start()
-    # Wait for the port to accept connections. Without this the first compile
-    # can reach the server before it is listening and fail with a connection
-    # error, which is then recorded as a gate failure. Previously this was
-    # masked by the time the purple agent spent generating code, so it only
-    # surfaced when submissions were served from cache.
-    assert await wait_port_open("localhost", 8080), "MCP server not ready in time"
-    print("PETSc MCP server is ready.")
+        # Step 2: Start Purple Agent (code generator being tested)
+        if external_purple:
+            print(f"Using external purple agent at {purple_url}...")
+            assert await wait_agent_ready(purple_url), "external purple agent not ready in time"
+            print("External purple agent is ready.")
+        else:
+            print("Launching purple agent...")
+            p_purple = multiprocessing.Process(target=run_purple_agent, args=(purple_model, purple_api_base_url))
+            p_purple.start()
+            started.append(p_purple)
+            assert await wait_agent_ready(purple_url), "purple agent not ready in time"
+            print("purple agent is ready.")
 
-    # Step 4: Send evaluation task to Green Agent
-    print("Sending task description to green agent...")
-    task_text = f"""
+        # Step 3: Start MCP server (provides PETSc compilation/execution tools)
+        print("Launching MCP server for green agent...")
+        petsc_mcp_server = multiprocessing.Process(target=start_mcp_server)
+        petsc_mcp_server.start()
+        started.append(petsc_mcp_server)
+        # Wait for the port to accept connections. Without this the first compile
+        # can reach the server before it is listening and fail with a connection
+        # error, which is then recorded as a gate failure. Previously this was
+        # masked by the time the purple agent spent generating code, so it only
+        # surfaced when submissions were served from cache.
+        assert await wait_port_open("localhost", 8080), "MCP server not ready in time"
+        print("PETSc MCP server is ready.")
+
+        # Step 4: Send evaluation task to Green Agent
+        print("Sending task description to green agent...")
+        task_text = f"""
 Your task is to instantiate petscagent-bench to test the agent located at:
 <purple_agent_url>
 {purple_url}/
@@ -159,21 +184,19 @@ Purple agent's LLM model is
 {purple_model}
 </purple_model>
     """
-    print("Task description:")
-    print(task_text)
-    print("Sending...")
-    
-    # Send message and wait for completion
-    # The Green Agent will autonomously manage the entire evaluation workflow
-    response = await send_message(green_url, task_text)
+        print("Task description:")
+        print(task_text)
+        print("Sending...")
 
-    # Step 5: Cleanup - terminate all processes
-    print("Evaluation complete. Terminating agents...")
-    p_green.terminate()
-    p_green.join()
-    p_purple.terminate()
-    p_purple.join()
-    print("Agents terminated.")
-    petsc_mcp_server.terminate()
-    petsc_mcp_server.join()
-    print("PETSc MCP server terminated.")
+        # Send message and wait for completion
+        # The Green Agent will autonomously manage the entire evaluation workflow
+        response = await send_message(green_url, task_text)
+        print("Evaluation complete.")
+    finally:
+        # Step 5: Cleanup - terminate the processes we started, youngest first.
+        # An external purple was never added to `started`, so it survives.
+        print("Terminating agents...")
+        for p in reversed(started):
+            p.terminate()
+            p.join()
+        print("Agents terminated.")

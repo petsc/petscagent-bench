@@ -53,7 +53,11 @@ def purple():
 
 
 @app.command()
-def launch():
+def launch(
+    purple_url: str = typer.Option(
+        None, help="Evaluate an already-running agent at this URL instead of "
+                   "starting the built-in purple."),
+):
     """Launch the complete evaluation workflow.
     
     This command orchestrates the full benchmark process:
@@ -70,7 +74,7 @@ def launch():
     - PETSc must be installed and PETSC_DIR/PETSC_ARCH set in .env
     - API keys for LLM providers must be configured in .env
     """
-    asyncio.run(launch_evaluation())
+    asyncio.run(launch_evaluation(purple_url=purple_url))
 
 
 if __name__ == "__main__":
