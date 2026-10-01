@@ -20,3 +20,7 @@ output/
 grid_logs*/
 *.stdout
 *.stderr
+
+# Generated dashboards, rebuilt by analysis/build_dashboard.py
+analysis/dashboard.html
+analysis/dashboard_artifact.html

@@ -1,0 +1,1998 @@
+<title>PETScAgent-Bench Results</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap">
+<style>
+/* Layout: sticky filter bar over a KPI strip, the contrast plot, then a card
+   grid that stacks to one column at phone width, with the drill-down last.
+
+   The purple axis is a factor model, so the page colors by ONE factor and
+   facets by the rest. That is not a stylistic preference: only three
+   categorical slots are validated for all-pairs separation, and a variant list
+   that grows with every new scaffold would blow past them immediately. Keeping
+   color on a factor keeps the count at two or three no matter how many variants
+   are in the set. */
+:root {
+  --plane: #f4f5f3;
+  --surface: #fcfcfb;
+  --raised: #ffffff;
+  --ink: #0b0b0b;
+  --ink-2: #52514e;
+  --ink-muted: #898781;
+  --grid: #e1e0d9;
+  --axis: #c3c2b7;
+  --hair: rgba(11, 11, 11, 0.10);
+  --hair-strong: rgba(11, 11, 11, 0.18);
+  --wash: rgba(42, 120, 214, 0.07);
+
+  /* Categorical slots 1-3, one per LEVEL of the colored factor. Validated
+     all-pairs in both modes. A fourth level folds into muted ink. */
+  --agent-0: #2a78d6;
+  --agent-1: #eb6834;
+  --agent-2: #1baf7a;
+
+  /* Sequential blue, 100 -> 700, for magnitude (heatmap, funnel, matrix). */
+  --seq-100: #cde2fb; --seq-200: #9ec5f4; --seq-300: #6da7ec; --seq-400: #3987e5;
+  --seq-500: #256abf; --seq-600: #184f95; --seq-700: #0d366b;
+  --seq-on-light: #0b0b0b;
+  --seq-on-dark: #ffffff;
+
+  /* Diverging blue <-> red with a neutral midpoint. Polarity is exactly what a
+     contrast and a judge delta measure, so both use this pair. */
+  --div-pos: #2a78d6;
+  --div-neg: #d03b3b;
+  --div-mid: #f0efec;
+
+  /* Status roles carry failure severity. They are deliberately distinct from
+     the categorical slots so a failure mode never impersonates a factor level,
+     and each always ships with an icon and a label. */
+  --status-good: #0ca30c;
+  --status-warning: #fab219;
+  --status-serious: #ec835a;
+  --status-critical: #d03b3b;
+  --status-neutral: #c3c2b7;
+
+  --font-sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --plane: #0d0d0d;
+    --surface: #1a1a19;
+    --raised: #201f1e;
+    --ink: #ffffff;
+    --ink-2: #c3c2b7;
+    --ink-muted: #898781;
+    --grid: #2c2c2a;
+    --axis: #383835;
+    --hair: rgba(255, 255, 255, 0.10);
+    --hair-strong: rgba(255, 255, 255, 0.20);
+    --wash: rgba(57, 135, 229, 0.12);
+    --agent-0: #3987e5;
+    --agent-1: #d95926;
+    --agent-2: #199e70;
+    --div-pos: #3987e5;
+    --div-mid: #383835;
+    --seq-on-light: #0b0b0b;
+    --seq-on-dark: #ffffff;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --plane: #0d0d0d;
+  --surface: #1a1a19;
+  --raised: #201f1e;
+  --ink: #ffffff;
+  --ink-2: #c3c2b7;
+  --ink-muted: #898781;
+  --grid: #2c2c2a;
+  --axis: #383835;
+  --hair: rgba(255, 255, 255, 0.10);
+  --hair-strong: rgba(255, 255, 255, 0.20);
+  --wash: rgba(57, 135, 229, 0.12);
+  --agent-0: #3987e5;
+  --agent-1: #d95926;
+  --agent-2: #199e70;
+  --div-pos: #3987e5;
+  --div-mid: #383835;
+  --seq-on-light: #0b0b0b;
+  --seq-on-dark: #ffffff;
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--plane);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+h1, h2, h3 { margin: 0; text-wrap: balance; font-weight: 600; }
+p { margin: 0; }
+a { color: inherit; }
+
+.wrap { max-width: 1240px; margin: 0 auto; padding-inline: 20px; padding-block: 0 56px; }
+
+/* ---- header + filters ---------------------------------------------------- */
+.topbar {
+  position: sticky;
+  top: env(safe-area-inset-top, 0px);
+  z-index: 40;
+  background: color-mix(in srgb, var(--plane) 92%, transparent);
+  backdrop-filter: blur(8px);
+  border-bottom: 1px solid var(--hair);
+}
+.topbar-inner {
+  max-width: 1240px; margin: 0 auto;
+  padding-inline: 20px; padding-block: 12px;
+  display: flex; flex-wrap: wrap; gap: 10px 22px; align-items: baseline;
+}
+.brand { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.brand h1 { font-size: 17px; letter-spacing: -0.01em; }
+.brand .sub {
+  font-family: var(--font-mono); font-size: 11px; color: var(--ink-muted);
+  letter-spacing: 0.02em;
+}
+.filters { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-left: auto; }
+.filters .flabel {
+  font-size: 11px; text-transform: uppercase; letter-spacing: 0.07em;
+  color: var(--ink-muted); font-weight: 600;
+}
+.seg { display: inline-flex; border: 1px solid var(--hair-strong); border-radius: 7px; overflow: hidden; }
+.seg button {
+  appearance: none; border: 0; background: transparent; cursor: pointer;
+  font-family: var(--font-sans); font-size: 12.5px; font-weight: 500; color: var(--ink-2);
+  padding: 6px 11px; min-height: 32px;
+}
+.seg button + button { border-left: 1px solid var(--hair); }
+.seg button:hover { background: var(--wash); }
+.seg button[aria-pressed="true"] { background: var(--agent-0); color: #fff; }
+.seg button:focus-visible { outline: 2px solid var(--agent-0); outline-offset: -2px; }
+
+/* Variant chips sit on their own row: with six or more variants they wrap, and
+   wrapping them inside the filter row would push the judge control off-screen. */
+.chiprow {
+  max-width: 1240px; margin: 0 auto;
+  padding-inline: 20px; padding-bottom: 11px;
+  display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
+}
+.chiprow .flabel {
+  font-size: 11px; text-transform: uppercase; letter-spacing: 0.07em;
+  color: var(--ink-muted); font-weight: 600; margin-right: 2px;
+}
+.chip {
+  appearance: none; cursor: pointer; display: inline-flex; align-items: center; gap: 6px;
+  border: 1px solid var(--hair-strong); border-radius: 99px; background: transparent;
+  font-family: var(--font-sans); font-size: 12px; color: var(--ink-2);
+  padding: 4px 11px 4px 8px; min-height: 28px;
+}
+.chip:hover { background: var(--wash); }
+.chip:focus-visible { outline: 2px solid var(--agent-0); outline-offset: 1px; }
+.chip .dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
+.chip[aria-pressed="false"] { opacity: 0.45; text-decoration: line-through; }
+.chip.plain { padding-left: 11px; color: var(--ink-muted); }
+/* Partial coverage warning. Status role with its own glyph, never a hue from
+   the categorical ramp, so it cannot be mistaken for a factor level. */
+.chip .chipwarn { color: var(--status-warning); font-size: 10.5px; font-variant-numeric: tabular-nums; }
+
+/* ---- cards --------------------------------------------------------------- */
+.lede {
+  margin-block: 22px 18px; max-width: 72ch;
+  font-size: 15px; color: var(--ink-2);
+}
+.lede strong { color: var(--ink); font-weight: 600; }
+.grid { display: grid; gap: 16px; }
+.grid.two { grid-template-columns: repeat(auto-fit, minmax(330px, 1fr)); }
+.card {
+  background: var(--surface);
+  border: 1px solid var(--hair);
+  border-radius: 10px;
+  padding: 18px 18px 16px;
+  min-width: 0;
+}
+.card.lead { margin-bottom: 16px; }
+.card.after { margin-top: 16px; }
+.card > header { margin-bottom: 14px; }
+.card h2 { font-size: 14.5px; letter-spacing: -0.005em; }
+.card .note { margin-top: 4px; font-size: 12.5px; color: var(--ink-2); max-width: 70ch; }
+.card .note code, .mono { font-family: var(--font-mono); font-size: 0.93em; }
+.cardhead { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: flex-start; }
+.cardhead .seg { margin-left: auto; flex: none; }
+.empty { font-size: 12.5px; color: var(--ink-muted); padding: 10px 0; }
+
+/* ---- KPI strip ----------------------------------------------------------- */
+.kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(168px, 1fr)); gap: 12px; margin-bottom: 16px; }
+.kpi {
+  background: var(--surface); border: 1px solid var(--hair); border-radius: 10px;
+  padding: 14px 15px; display: flex; flex-direction: column; gap: 3px;
+}
+.kpi .k-label { font-size: 11.5px; color: var(--ink-2); font-weight: 500; }
+.kpi .k-value { font-size: 27px; font-weight: 600; letter-spacing: -0.02em; line-height: 1.15; }
+.kpi .k-foot { font-size: 11.5px; color: var(--ink-muted); font-family: var(--font-mono); }
+
+/* ---- contrast plot ------------------------------------------------------- */
+/* Rows are one-factor contrasts, not variants. The whole suite is built so a
+   reader can ask "what did this one change buy", and that question is a
+   difference with an interval, never two bars side by side. */
+.contrasts { display: flex; flex-direction: column; gap: 2px; }
+.caxis {
+  display: grid; grid-template-columns: minmax(150px, 290px) minmax(140px, 1fr) 128px;
+  gap: 14px; align-items: end; padding-bottom: 6px;
+}
+.caxis .ct { position: relative; height: 15px; }
+.caxis .ct span {
+  position: absolute; transform: translateX(-50%); font-family: var(--font-mono);
+  font-size: 10px; color: var(--ink-muted); white-space: nowrap;
+}
+.caxis .cu { font-size: 10.5px; color: var(--ink-muted); text-transform: uppercase; letter-spacing: 0.06em; }
+.crow {
+  display: grid; grid-template-columns: minmax(150px, 290px) minmax(140px, 1fr) 128px;
+  gap: 14px; align-items: center;
+  padding: 7px 0; border-top: 1px solid var(--hair);
+}
+.crow:hover { background: var(--wash); }
+.cl { min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.ctag {
+  font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.07em;
+  color: var(--ink-muted);
+}
+.cname { font-size: 12.5px; color: var(--ink); font-weight: 500; overflow-wrap: anywhere; }
+.charms { font-size: 11px; color: var(--ink-muted); font-family: var(--font-mono); overflow-wrap: anywhere; }
+.ctrack { position: relative; height: 26px; min-width: 0; }
+.ctrack .cgrid, .ctrack .czero {
+  position: absolute; top: 2px; bottom: 2px; width: 1px; background: var(--grid);
+}
+.ctrack .czero { background: var(--axis); width: 1px; }
+.ctrack .cbar {
+  position: absolute; top: 50%; height: 2px; margin-top: -1px; border-radius: 1px;
+}
+.ctrack .ccap {
+  position: absolute; top: 50%; width: 1px; height: 9px; margin-top: -4.5px;
+}
+.ctrack .cdot {
+  position: absolute; top: 50%; width: 10px; height: 10px; margin: -5px 0 0 -5px;
+  border-radius: 50%; box-sizing: border-box;
+}
+.cv {
+  display: flex; flex-direction: column; align-items: flex-end; gap: 0;
+  font-family: var(--font-mono); font-variant-numeric: tabular-nums; text-align: right;
+}
+.cv .cd { font-size: 13px; font-weight: 600; color: var(--ink); }
+.cv .cint { font-size: 10.5px; color: var(--ink-muted); }
+.cstat { display: inline-flex; align-items: center; gap: 4px; font-size: 10.5px; }
+
+/* ---- heatmap / matrix ---------------------------------------------------- */
+.hm { display: grid; gap: 2px; min-width: 300px; }
+.hm .hm-h {
+  font-size: 11px; font-weight: 600; color: var(--ink-2);
+  text-align: center; padding-bottom: 4px; align-self: end; line-height: 1.25;
+}
+.hm .hm-r {
+  font-family: var(--font-mono); font-size: 11px; color: var(--ink-2);
+  display: flex; align-items: center; padding-right: 10px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.hm .cell {
+  appearance: none; border: 0; cursor: pointer; border-radius: 3px;
+  min-height: 38px; display: flex; align-items: center; justify-content: center;
+  font-family: var(--font-mono); font-size: 12.5px; font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+.hm .cell.flat { cursor: default; }
+.hm .cell:hover { filter: brightness(1.06); }
+.hm .cell:focus-visible { outline: 2px solid var(--ink); outline-offset: 1px; }
+.hm .cell[aria-pressed="true"] { box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px var(--ink); }
+.hmscroll { overflow-x: auto; }
+.scale {
+  display: flex; align-items: center; gap: 7px; margin-top: 12px; flex-wrap: wrap;
+  font-size: 11px; color: var(--ink-muted); font-family: var(--font-mono);
+}
+.scale .ramp { display: flex; gap: 2px; }
+.scale .ramp i { width: 20px; height: 9px; border-radius: 2px; display: block; }
+
+/* ---- generic svg chart --------------------------------------------------- */
+.chart { width: 100%; height: auto; display: block; overflow: visible; }
+.chart text { font-family: var(--font-sans); fill: var(--ink-2); }
+.chart .tick { font-family: var(--font-mono); font-size: 10px; fill: var(--ink-muted); }
+.chart .gridline { stroke: var(--grid); stroke-width: 1; }
+.chart .baseline { stroke: var(--axis); stroke-width: 1; }
+.chart .dlabel { font-size: 11px; font-weight: 600; fill: var(--ink); font-variant-numeric: tabular-nums; }
+.chart .hit { cursor: pointer; }
+
+/* ---- legend -------------------------------------------------------------- */
+.legend { display: flex; flex-wrap: wrap; gap: 6px 16px; margin-top: 12px; }
+.legend .item { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ink-2); }
+.legend .swatch { width: 11px; height: 11px; border-radius: 3px; flex: none; }
+.legend .dash { width: 14px; height: 2px; border-radius: 1px; flex: none; }
+
+/* ---- funnel + variance bars ---------------------------------------------- */
+.funnel { display: flex; flex-direction: column; gap: 9px; }
+.fstage { display: grid; grid-template-columns: 120px 1fr 86px; gap: 10px; align-items: center; }
+.fstage .fl { font-size: 12px; color: var(--ink-2); }
+.fstage .ftrack { background: var(--grid); border-radius: 3px; height: 20px; overflow: hidden; }
+.fstage .ffill { height: 100%; border-radius: 0 4px 4px 0; }
+.fstage .fv {
+  font-family: var(--font-mono); font-size: 12px; text-align: right;
+  font-variant-numeric: tabular-nums; color: var(--ink);
+}
+.fstage .fv small { color: var(--ink-muted); }
+
+.proj { width: 100%; border-collapse: collapse; font-size: 12.5px; margin-top: 14px; }
+.proj th, .proj td { padding: 6px 9px; border-bottom: 1px solid var(--hair); text-align: right; }
+.proj th:first-child, .proj td:first-child { text-align: left; }
+.proj thead th {
+  font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.06em;
+  color: var(--ink-muted); font-weight: 600;
+}
+.proj td { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.proj td:first-child { font-family: var(--font-sans); color: var(--ink-2); }
+.proj tr.now td { color: var(--ink); font-weight: 600; }
+
+/* ---- failure modes ------------------------------------------------------- */
+.fm { display: flex; flex-direction: column; gap: 9px; }
+.fmrow { display: grid; grid-template-columns: minmax(96px, 190px) 1fr 54px; gap: 10px; align-items: center; }
+.fmrow .fml { font-size: 12px; color: var(--ink-2); min-width: 0; overflow-wrap: anywhere; }
+.fmrow .fmtrack { display: flex; height: 20px; border-radius: 3px; overflow: hidden; background: var(--grid); }
+/* 2px surface gap between segments, so adjacent fills never fuse. */
+.fmrow .fmseg { height: 100%; border-right: 2px solid var(--surface); box-sizing: border-box; }
+.fmrow .fmseg:last-child { border-right: 0; }
+.fmrow .fmn {
+  font-family: var(--font-mono); font-size: 12px; text-align: right;
+  font-variant-numeric: tabular-nums; color: var(--ink-muted);
+}
+
+/* ---- judge matrix -------------------------------------------------------- */
+.jm { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.jm th, .jm td { padding: 8px 10px; text-align: right; border-bottom: 1px solid var(--hair); }
+.jm th:first-child, .jm td:first-child { text-align: left; }
+.jm thead th { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-muted); font-weight: 600; }
+.jm td { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.jm td:first-child { font-family: var(--font-sans); }
+.jm .agentname { display: inline-flex; align-items: center; gap: 7px; }
+.jm .dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
+.deltabar { display: grid; grid-template-columns: 1fr 1fr; width: 92px; height: 13px; margin-left: auto; background: var(--div-mid); border-radius: 2px; }
+.deltabar i { display: block; height: 100%; }
+.deltabar .l { justify-self: end; border-radius: 2px 0 0 2px; }
+.deltabar .r { justify-self: start; border-radius: 0 2px 2px 0; }
+
+/* ---- drill-down ---------------------------------------------------------- */
+.drill { margin-top: 16px; }
+.drill-head { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: baseline; margin-bottom: 12px; }
+.drill-head h2 { font-size: 14.5px; }
+.drill-head .ctx { font-family: var(--font-mono); font-size: 12px; color: var(--ink-muted); }
+.runlist { display: flex; flex-direction: column; gap: 8px; }
+.run {
+  border: 1px solid var(--hair); border-radius: 8px; background: var(--raised); overflow: hidden;
+}
+.run > summary {
+  cursor: pointer; padding: 10px 13px; display: flex; flex-wrap: wrap; gap: 6px 12px;
+  align-items: center; list-style: none; font-size: 12.5px;
+}
+.run > summary::-webkit-details-marker { display: none; }
+.run > summary:hover { background: var(--wash); }
+.run > summary:focus-visible { outline: 2px solid var(--agent-0); outline-offset: -2px; }
+.run .chev { color: var(--ink-muted); font-family: var(--font-mono); flex: none; }
+.run[open] .chev { transform: rotate(90deg); }
+.run .rname { font-weight: 600; }
+.run .rmeta { font-family: var(--font-mono); font-size: 11.5px; color: var(--ink-muted); }
+.run .rscore { margin-left: auto; font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-weight: 600; }
+.run .body { padding: 2px 13px 14px; border-top: 1px solid var(--hair); }
+.cliline {
+  font-family: var(--font-mono); font-size: 11.5px; color: var(--ink-2);
+  background: var(--plane); border-radius: 5px; padding: 7px 9px; margin: 11px 0;
+  overflow-x: auto; white-space: pre;
+}
+/* The weighted rollup that produced this run's composite. Five columns:
+   name, bar, score out of 100, weight, contribution. The contributions sum to
+   the score exactly, which is the whole point of showing it, so the total row
+   is a check the reader can run rather than a restatement of the summary. */
+.metrics { margin: 11px 0 13px; display: grid; gap: 3px; }
+.mrow {
+  display: grid; grid-template-columns: 96px 1fr 34px 42px 44px;
+  gap: 9px; align-items: center; font-size: 11.5px;
+}
+.mname { color: var(--ink-2); }
+.mtrack { height: 7px; border-radius: 4px; background: var(--grid); overflow: hidden; }
+.mfill { display: block; height: 100%; border-radius: 4px; }
+.mval, .mcon { font-family: var(--font-mono); font-variant-numeric: tabular-nums; text-align: right; }
+.mw { font-family: var(--font-mono); font-size: 10.5px; color: var(--ink-muted); text-align: right; }
+.mcon { font-weight: 600; }
+.mtot { border-top: 1px solid var(--hair); padding-top: 5px; margin-top: 2px; }
+.mtot .mname { font-weight: 600; color: var(--ink); }
+.mhead { font-size: 10.5px; color: var(--ink-muted); text-transform: uppercase; letter-spacing: 0.06em; }
+.evrow { border-top: 1px solid var(--hair); padding: 9px 0; display: grid; grid-template-columns: 1fr; gap: 4px; }
+.evrow:first-of-type { border-top: 0; }
+.evhead { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; }
+.evname { font-family: var(--font-mono); font-size: 12px; font-weight: 500; }
+.evfb { font-size: 12.5px; color: var(--ink-2); max-width: 78ch; }
+.pill {
+  font-size: 10.5px; font-weight: 600; letter-spacing: 0.03em; text-transform: uppercase;
+  padding: 2px 7px; border-radius: 99px; border: 1px solid var(--hair-strong); color: var(--ink-2);
+  display: inline-flex; align-items: center; gap: 4px; flex: none;
+}
+.pill.pass { color: var(--status-good); border-color: color-mix(in srgb, var(--status-good) 45%, transparent); }
+.pill.fail { color: var(--div-neg); border-color: color-mix(in srgb, var(--div-neg) 45%, transparent); }
+.pill .ic { font-size: 11px; line-height: 1; }
+.evscore { font-family: var(--font-mono); font-size: 11.5px; color: var(--ink-muted); font-variant-numeric: tabular-nums; }
+.abortbanner {
+  margin: 11px 0 0; padding: 9px 11px; border-radius: 6px; font-size: 12.5px;
+  background: color-mix(in srgb, var(--div-neg) 9%, transparent);
+  border: 1px solid color-mix(in srgb, var(--div-neg) 28%, transparent);
+  color: var(--ink);
+  display: flex; gap: 8px; align-items: baseline;
+}
+.abortbanner .ic { flex: none; }
+.errbox {
+  margin: 9px 0 0; padding: 10px 11px; border-radius: 6px;
+  background: var(--plane); border: 1px solid var(--hair);
+  font-family: var(--font-mono); font-size: 11.5px; line-height: 1.55; color: var(--ink-2);
+  white-space: pre-wrap; overflow-wrap: anywhere; overflow-y: auto; max-height: 300px;
+}
+.errnote { margin: 6px 0 0; font-size: 11.5px; color: var(--ink-muted); }
+
+/* ---- generated source ---------------------------------------------------- */
+.src { margin: 11px 0 0; border: 1px solid var(--hair); border-radius: 6px; background: var(--plane); }
+.src > summary {
+  cursor: pointer; list-style: none; padding: 8px 11px;
+  display: flex; flex-wrap: wrap; gap: 5px 10px; align-items: center; font-size: 12px;
+}
+.src > summary::-webkit-details-marker { display: none; }
+.src > summary:hover { background: var(--wash); }
+.src > summary:focus-visible { outline: 2px solid var(--agent-0); outline-offset: -2px; }
+.src .sname { font-family: var(--font-mono); font-weight: 600; color: var(--ink); }
+.src .smeta { font-family: var(--font-mono); font-size: 11px; color: var(--ink-muted); }
+.src .copy {
+  margin-left: auto; appearance: none; cursor: pointer; flex: none;
+  background: transparent; border: 1px solid var(--hair-strong); border-radius: 5px;
+  font-family: var(--font-sans); font-size: 11px; color: var(--ink-2); padding: 3px 9px; min-height: 26px;
+}
+.src .copy:hover { background: var(--wash); }
+.src .copy:focus-visible { outline: 2px solid var(--agent-0); outline-offset: 1px; }
+.code {
+  border-top: 1px solid var(--hair); max-height: 460px; overflow: auto;
+  font-family: var(--font-mono); font-size: 11.5px; line-height: 1.55;
+  padding: 8px 0;
+}
+.cline { display: flex; }
+.cline:hover { background: var(--wash); }
+.ln {
+  flex: none; width: 46px; padding-right: 12px; text-align: right;
+  color: var(--ink-muted); user-select: none; font-variant-numeric: tabular-nums;
+}
+.lt { white-space: pre; padding-right: 14px; color: var(--ink-2); }
+
+/* ---- table view ---------------------------------------------------------- */
+.tablewrap { overflow-x: auto; margin-top: 4px; }
+table.data { width: 100%; border-collapse: collapse; font-size: 12.5px; white-space: nowrap; }
+table.data th, table.data td { padding: 7px 11px; border-bottom: 1px solid var(--hair); text-align: right; }
+table.data th:first-child, table.data td:first-child { text-align: left; }
+table.data thead th {
+  font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em;
+  color: var(--ink-muted); font-weight: 600; position: sticky; top: 0; background: var(--surface);
+}
+table.data td { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+table.data td:first-child { font-family: var(--font-sans); }
+table.data tbody tr:hover { background: var(--wash); }
+/* The five metric columns are the parts the composite is built from, not five
+   more facts about the run, so a rule opens and closes the block and the
+   weights ride in the headers. Without the rule they read as peers of Tier and
+   Tokens and the reader has to remember which columns sum to Score. */
+table.data th.catfirst, table.data td.catfirst { border-left: 1px solid var(--hair-strong); }
+table.data th.catlast, table.data td.catlast { border-right: 1px solid var(--hair-strong); }
+table.data td.cat { color: var(--ink-2); }
+table.data th .thw { color: var(--ink-muted); font-weight: 400; font-size: 10px; margin-left: 5px;
+                     text-transform: none; letter-spacing: 0; }
+.toggle {
+  appearance: none; background: transparent; border: 1px solid var(--hair-strong); border-radius: 7px;
+  font-family: var(--font-sans); font-size: 12px; font-weight: 500; color: var(--ink-2);
+  padding: 6px 11px; cursor: pointer; min-height: 32px;
+}
+.toggle:hover { background: var(--wash); }
+.toggle:focus-visible { outline: 2px solid var(--agent-0); outline-offset: 1px; }
+
+/* ---- tooltip ------------------------------------------------------------- */
+#tip {
+  position: fixed; z-index: 90; pointer-events: none; opacity: 0;
+  transition: opacity 90ms linear; max-width: 280px;
+  background: var(--raised); color: var(--ink);
+  border: 1px solid var(--hair-strong); border-radius: 7px;
+  padding: 8px 10px; font-size: 12px; line-height: 1.45;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.16);
+}
+#tip .t-val { font-size: 14px; font-weight: 600; font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+#tip .t-lab { color: var(--ink-2); font-size: 11.5px; }
+#tip .t-key { display: inline-block; width: 13px; height: 2px; border-radius: 1px; vertical-align: middle; margin-right: 5px; }
+
+footer.foot {
+  margin-top: 30px; padding-top: 16px; border-top: 1px solid var(--hair);
+  font-size: 11.5px; color: var(--ink-muted); font-family: var(--font-mono);
+  display: flex; flex-wrap: wrap; gap: 6px 18px;
+}
+
+@media (max-width: 640px) {
+  .caxis, .crow { grid-template-columns: 1fr; gap: 4px; }
+  .caxis .ct { display: none; }
+  .cv { align-items: flex-start; text-align: left; }
+}
+@media (max-width: 560px) {
+  .fstage { grid-template-columns: 96px 1fr 72px; }
+  .kpi .k-value { font-size: 23px; }
+  .filters { margin-left: 0; }
+  .ln { width: 34px; padding-right: 8px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; animation: none !important; }
+}
+</style>
+
+<div class="topbar">
+  <div class="topbar-inner">
+    <div class="brand">
+      <h1>PETScAgent-Bench Results</h1>
+      <span class="sub" id="provenance"></span>
+    </div>
+    <div class="filters">
+      <span class="flabel" id="judgelabel">Judge</span>
+      <div class="seg" role="group" aria-labelledby="judgelabel" id="judgeseg"></div>
+      <span class="flabel" id="colorlabel" hidden>Color by</span>
+      <div class="seg" role="group" aria-labelledby="colorlabel" id="colorseg" hidden></div>
+      <button class="toggle" id="tabletoggle" aria-expanded="false">Table view</button>
+    </div>
+  </div>
+  <div class="chiprow" id="chiprow"></div>
+</div>
+
+<div class="wrap">
+  <p class="lede" id="lede"></p>
+
+  <div class="kpis" id="kpis"></div>
+
+  <section class="card lead" id="contrastcard">
+    <header>
+      <h2>What one change buys, with its uncertainty</h2>
+      <p class="note">Each row is a pair of purple variants differing in exactly one factor,
+      paired problem by problem and bootstrapped over problems. Pairing is what makes a
+      seven-problem suite able to resolve anything at all: problem difficulty is the largest
+      term in the data and it cancels inside a pair. <strong>r</strong> is the correlation
+      between the two arms, so a row with low r is one where pairing bought little and the
+      interval should be read as wide on purpose.</p>
+    </header>
+    <div class="contrasts" id="contrasts"></div>
+    <div class="legend" id="contrastlegend"></div>
+  </section>
+
+  <div class="grid two">
+    <section class="card">
+      <header>
+        <h2>Where variants fail, problem by problem</h2>
+        <p class="note">Share of runs that compiled <em>and</em> executed. A run that never
+        executes is never scored at all, so it lands at zero without a verdict, which makes
+        this grid rather than the mean score the place the signal lives. Select a cell to read
+        its evaluator feedback and generated source below.</p>
+      </header>
+      <div class="hmscroll"><div class="hm" id="heatmap"></div></div>
+      <div class="scale">
+        <span>0%</span>
+        <span class="ramp" id="ramp"></span>
+        <span>100%</span>
+        <span style="margin-left:auto">executed without error</span>
+      </div>
+    </section>
+
+    <section class="card">
+      <header>
+        <h2>Every run, not the average</h2>
+        <p class="note">One mark per problem-run, one column per variant. The scores pile up at
+        zero and again near the top with little between, so a mean sits in a gap no run
+        occupies. The zeros are runs that threw before evaluation, so they count a crash rather
+        than measure quality. Bars show the bootstrap 95% interval over problems.</p>
+      </header>
+      <svg class="chart" id="strip" viewBox="0 0 560 340" role="img" aria-labelledby="striptitle"></svg>
+      <div class="legend" id="striplegend"></div>
+    </section>
+
+    <section class="card">
+      <header>
+        <h2>Where the pipeline loses runs</h2>
+        <p class="note">Each stage as a share of all problem-runs in the current slice.
+        The largest single loss is between compiled and executed, which is also the only
+        stage where the harness stops and records an exception instead of a score.</p>
+      </header>
+      <div class="funnel" id="funnel"></div>
+    </section>
+
+    <section class="card">
+      <header>
+        <h2>The judge moves the score too</h2>
+        <p class="note">Mean composite by judge, for each variant. When the gap between judges
+        on the same submissions rivals the gap between variants, no score means anything
+        without naming its judge.</p>
+      </header>
+      <div class="tablewrap">
+        <table class="jm" id="judgematrix"></table>
+      </div>
+    </section>
+  </div>
+
+  <section class="card after">
+    <header class="cardhead">
+      <div>
+        <h2>How the losses break down</h2>
+        <p class="note">Every problem-run in the current slice, split by what the harness
+        recorded, one bar per variant. This answers what the grid above cannot: whether a
+        change moved the <em>kind</em> of failure or only its rate. The per-problem view this
+        card used to offer was the grid's own row totals, so it is gone rather than
+        repeated.</p>
+      </div>
+    </header>
+    <div class="fm" id="failmodes"></div>
+    <div class="legend" id="fmlegend"></div>
+  </section>
+
+  <div class="grid two" style="margin-top:16px">
+    <section class="card">
+      <header>
+        <h2>Quality profile, scored runs only</h2>
+        <p class="note">Mean category score over runs that produced a verdict. Runs that threw
+        are excluded deliberately; they carry a zero in every category at once, so including
+        them would redraw the execution rate five times over and make the dimensions look
+        correlated when they are not. Weights: <span id="weightnote" class="mono"></span>.</p>
+      </header>
+      <div class="hmscroll"><div class="hm" id="catmatrix"></div></div>
+      <div class="scale">
+        <span>0</span>
+        <span class="ramp" id="catramp"></span>
+        <span>100</span>
+        <span style="margin-left:auto" id="catn"></span>
+      </div>
+    </section>
+
+    <section class="card">
+      <header>
+        <h2>What the score costs</h2>
+        <p class="note">Mean tokens against mean composite, one point per variant. A scaffold
+        that adds sub-agents buys its points with tokens, and this is the only view where that
+        price is visible. Points up and to the left are better.</p>
+      </header>
+      <svg class="chart" id="pareto" viewBox="0 0 560 330" role="img" aria-labelledby="paretotitle"></svg>
+      <div class="legend" id="paretolegend"></div>
+    </section>
+  </div>
+
+  <section class="card after">
+    <header>
+      <h2>Buy problems, or buy runs?</h2>
+      <p class="note">Score variance split into the part that lives between problems and the
+      part that lives between repeated runs of the same problem. Repeating a run only shrinks
+      the second term, so when the first dominates, extra runs of the same suite buy almost
+      nothing and the next unit of compute belongs on new problems. The projection is the
+      half-width of a 95% interval on a variant mean, under the variance split measured here.</p>
+    </header>
+    <div class="funnel" id="variance"></div>
+    <div class="tablewrap"><table class="proj" id="projection"></table></div>
+  </section>
+
+  <section class="card drill" id="tablecard" hidden>
+    <header><h2>All problem-runs</h2>
+      <p class="note">Every record in the current slice, the WCAG-clean twin of the charts above.
+      The five ruled columns are the metrics the composite is weighted from, at the grain of one
+      problem in one run, which no chart above reports. A run that never reached a judge has no
+      metric vector and shows em dashes rather than zeros.</p>
+    </header>
+    <div class="tablewrap"><table class="data" id="datatable"></table></div>
+  </section>
+
+  <section class="drill">
+    <div class="drill-head">
+      <h2 id="drilltitle">Run detail and generated source</h2>
+      <span class="ctx" id="drillctx"></span>
+    </div>
+    <div class="runlist" id="runlist"></div>
+  </section>
+
+  <footer class="foot" id="foot"></footer>
+</div>
+
+<div id="tip" role="status" aria-live="polite"></div>
+
+<script type="application/json" id="payload">__PAYLOAD__</script>
+<script>
+(function () {
+  "use strict";
+
+  const DATA = JSON.parse(document.getElementById("payload").textContent);
+  const VARIANTS = DATA.variants, JUDGES = DATA.judges, PROBLEMS = DATA.problems;
+  const FACTORS = DATA.factors;
+  const SEQ = ["--seq-100", "--seq-200", "--seq-300", "--seq-400", "--seq-500", "--seq-600", "--seq-700"];
+  const CAT_LABELS = {
+    correctness: "Correctness", performance: "Performance", code_quality: "Code quality",
+    algorithm: "Algorithm", petsc: "PETSc practice"
+  };
+  // Three validated categorical slots, no more. A factor with a fourth level
+  // folds the tail into muted ink rather than inventing a hue, because an
+  // invented hue is exactly the pair the validator would fail.
+  const SLOTS = 3;
+  const NS = "http://www.w3.org/2000/svg";
+
+  // State. `judge` and `active` scope the data; `colorBy` chooses which single
+  // factor spends the categorical palette; everything else is view state.
+  let judge = "all";
+  let colorBy = FACTORS.length ? FACTORS[0].key : null;
+  let active = new Set(VARIANTS.map((_, i) => i));
+  let selection = null;   // {v, p} chosen in the heatmap
+  let showTable = false;
+
+  const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  const pct = (x) => (x * 100).toFixed(0) + "%";
+  const fx = (x, n) => (x === null || x === undefined || Number.isNaN(x) ? "—" : x.toFixed(n));
+  // A statistic the data cannot support arrives as null: a variant with one run
+  // has no interval, a contrast on fewer than three shared problems has no
+  // correlation. Plotting those as zero would invent a result, so every
+  // geometry checks here first and omits the mark instead.
+  const fin = (x) => typeof x === "number" && Number.isFinite(x);
+  const sgn = (x, n) => (x > 0 ? "+" : "") + fx(x, n);
+  const mean = (xs) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null);
+  const el = (tag, cls, text) => {
+    const n = document.createElement(tag);
+    if (cls) n.className = cls;
+    if (text !== undefined) n.textContent = text;   // labels are untrusted data
+    return n;
+  };
+  const add = (parent, tag, attrs) => {
+    const n = document.createElementNS(NS, tag);
+    for (const k in attrs) n.setAttribute(k, attrs[k]);
+    parent.appendChild(n);
+    return n;
+  };
+
+  const inJudge = (r) => judge === "all" || DATA.judges[r.j].id === judge;
+  const slice = () => DATA.rows.filter((r) => active.has(r.v) && inJudge(r));
+  const shown = () => VARIANTS.map((v, i) => i).filter((i) => active.has(i));
+  const ciFor = (variantId) => (DATA.ci[judge] || DATA.ci.all)[variantId];
+  // Everything the page draws or counts uses `contrastsNow`, which excludes the
+  // rows resting on too few shared problems to carry an interval. `withheldNow`
+  // exists only so the card can say how many were held back and why, rather
+  // than quietly showing a shorter list.
+  const contrastsAll = () => (DATA.contrasts[judge] || DATA.contrasts.all || [])
+    .filter((c) => active.has(c.base) && active.has(c.test));
+  const contrastsNow = () => contrastsAll().filter((c) => !c.withheld);
+  const withheldNow = () => contrastsAll().filter((c) => c.withheld);
+  // Problems a variant attempted under the current judge filter. Deliberately
+  // not filtered by `active`, because the chip for a hidden variant must still
+  // report its own coverage rather than the zero that hiding it produces. A
+  // variant covering part of the suite cannot be compared on means with one
+  // covering all of it, so the chips and the strip plot both say so.
+  const coverage = (vi) =>
+    new Set(DATA.rows.filter((r) => r.v === vi && inJudge(r)).map((r) => r.p)).size;
+  const thin = (vi) => coverage(vi) < DATA.nProblems;
+
+  // Largest signed judge-to-judge gap on the same submissions, across the
+  // visible variants. The judge matrix shows the whole table; this is the one
+  // number that belongs next to the headline, because a judge gap that rivals
+  // the variant gaps means no mean on this page is readable without its judge.
+  function judgeGap() {
+    if (JUDGES.length !== 2) return null;
+    let worst = null;
+    for (const vi of shown()) {
+      const m = JUDGES.map((j) => mean(DATA.rows.filter(
+        (r) => r.v === vi && DATA.judges[r.j].id === j.id).map((r) => r.s)));
+      if (m[0] === null || m[1] === null) continue;
+      if (worst === null || Math.abs(m[0] - m[1]) > Math.abs(worst)) worst = m[0] - m[1];
+    }
+    return worst;
+  }
+  const varianceNow = () => DATA.variance[judge] || DATA.variance.all;
+
+  /* ---- color ------------------------------------------------------------- */
+  // Color follows the level of the chosen factor, never the variant's rank, so
+  // changing the judge filter or hiding a variant never repaints the survivors.
+  function levelIndex(vi) {
+    if (!colorBy) return 0;
+    const f = FACTORS.find((x) => x.key === colorBy);
+    if (!f) return 0;
+    const value = VARIANTS[vi].factors[colorBy];
+    return f.levels.findIndex((l) => l.value === value);
+  }
+  function variantColor(vi) {
+    const i = levelIndex(vi);
+    return i >= 0 && i < SLOTS ? css("--agent-" + i) : css("--ink-muted");
+  }
+  function colorLevels() {
+    const f = FACTORS.find((x) => x.key === colorBy);
+    if (!f) return [];
+    return f.levels.map((l, i) => ({
+      label: l.label,
+      color: i < SLOTS ? css("--agent-" + i) : css("--ink-muted"),
+      folded: i >= SLOTS
+    }));
+  }
+
+  /* ---- tooltip ----------------------------------------------------------- */
+  const tip = document.getElementById("tip");
+  function showTip(evt, value, label, color) {
+    tip.replaceChildren();
+    const v = el("div", "t-val");
+    if (color) {
+      const k = el("span", "t-key");
+      k.style.background = color;
+      v.appendChild(k);
+    }
+    v.appendChild(document.createTextNode(value));
+    tip.appendChild(v);
+    tip.appendChild(el("div", "t-lab", label));
+    tip.style.opacity = "1";
+    moveTip(evt);
+  }
+  function moveTip(evt) {
+    const r = tip.getBoundingClientRect();
+    let x = (evt.clientX ?? 0) + 14, y = (evt.clientY ?? 0) - 10;
+    if (evt.clientX === undefined && evt.target && evt.target.getBoundingClientRect) {
+      const b = evt.target.getBoundingClientRect();
+      x = b.right + 8; y = b.top;
+    }
+    tip.style.left = Math.min(x, window.innerWidth - r.width - 10) + "px";
+    tip.style.top = Math.max(8, Math.min(y, window.innerHeight - r.height - 10)) + "px";
+  }
+  const hideTip = () => { tip.style.opacity = "0"; };
+  function hoverable(node, value, label, color) {
+    const on = (e) => showTip(e, value, label, color);
+    node.addEventListener("pointerenter", on);
+    node.addEventListener("pointermove", moveTip);
+    node.addEventListener("pointerleave", hideTip);
+    node.addEventListener("focus", on);
+    node.addEventListener("blur", hideTip);
+  }
+
+  /* ---- header + filters -------------------------------------------------- */
+  function segment(host, opts, isOn, onPick) {
+    host.replaceChildren();
+    for (const o of opts) {
+      const b = el("button", null, o.label);
+      b.type = "button";
+      b.setAttribute("aria-pressed", String(isOn(o)));
+      b.addEventListener("click", () => { onPick(o); renderAll(); });
+      host.appendChild(b);
+    }
+  }
+  function renderChrome() {
+    segment(document.getElementById("judgeseg"),
+      [{ id: "all", label: "Both" }].concat(JUDGES),
+      (o) => judge === o.id, (o) => { judge = o.id; });
+
+    if (FACTORS.length > 1) {
+      document.getElementById("colorlabel").hidden = false;
+      const seg = document.getElementById("colorseg");
+      seg.hidden = false;
+      segment(seg, FACTORS.map((f) => ({ id: f.key, label: f.label })),
+        (o) => colorBy === o.id, (o) => { colorBy = o.id; });
+    }
+
+    renderChips();
+
+    document.getElementById("provenance").textContent =
+      DATA.rows.length + " problem-runs · " + PROBLEMS.length + " problems · " +
+      VARIANTS.length + " variants · " + JUDGES.length + " judges · " +
+      DATA.codeRuns + " with source";
+    document.getElementById("weightnote").textContent =
+      Object.entries(DATA.weights).map(([k, v]) => (CAT_LABELS[k] || k) + " " + v).join(", ");
+
+    const foot = [
+      el("span", null, "Generated " + DATA.generated),
+      el("span", null, "python analysis/build_dashboard.py")
+    ];
+    if (DATA.harnessRevs.length) foot.push(el("span", null, "harness " + DATA.harnessRevs.join(", ")));
+    if (DATA.petscRevs.length) foot.push(el("span", null, "petsc " + DATA.petscRevs.join(", ")));
+    document.getElementById("foot").replaceChildren.apply(document.getElementById("foot"), foot);
+
+    const tt = document.getElementById("tabletoggle");
+    tt.addEventListener("click", () => {
+      showTable = !showTable;
+      tt.setAttribute("aria-expanded", String(showTable));
+      document.getElementById("tablecard").hidden = !showTable;
+      if (showTable) renderTable();
+    });
+  }
+
+  function renderChips() {
+    const host = document.getElementById("chiprow");
+    host.replaceChildren();
+    host.appendChild(el("span", "flabel", "Variants"));
+    VARIANTS.forEach((v, i) => {
+      const b = el("button", "chip");
+      b.type = "button";
+      const on = active.has(i);
+      b.setAttribute("aria-pressed", String(on));
+      const dot = el("span", "dot");
+      dot.style.background = variantColor(i);
+      b.appendChild(dot);
+      b.appendChild(document.createTextNode(v.short));
+      b.title = v.label;
+      // A variant that did not attempt the whole suite is marked on the chip
+      // itself, so the gap is visible before any card is read rather than
+      // inferred from a blank heatmap column.
+      if (thin(i)) {
+        const warn = el("span", "chipwarn", "⚠ " + coverage(i) + "/" + DATA.nProblems);
+        b.appendChild(warn);
+        b.title = v.label + " — attempted " + coverage(i) + " of " + DATA.nProblems +
+          " problems, so its mean is not comparable with a full arm";
+      }
+      b.addEventListener("click", () => {
+        // Never let the last variant be hidden: an empty slice would blank
+        // every card at once with no way back except a reload.
+        if (on && active.size === 1) return;
+        if (on) active.delete(i); else active.add(i);
+        renderAll();
+      });
+      host.appendChild(b);
+    });
+    if (active.size < VARIANTS.length) {
+      const all = el("button", "chip plain", "show all");
+      all.type = "button";
+      all.addEventListener("click", () => {
+        active = new Set(VARIANTS.map((_, i) => i));
+        renderAll();
+      });
+      host.appendChild(all);
+    }
+  }
+
+  /* ---- KPI strip --------------------------------------------------------- */
+  function renderKpis() {
+    const rows = slice();
+    const n = rows.length || 1;
+    const ran = rows.filter((r) => r.ran).length;
+    const zeros = rows.filter((r) => r.s === 0).length;
+    const nonzero = rows.filter((r) => r.s > 0);
+    const nzMean = mean(nonzero.map((r) => r.s)) || 0;
+    const widths = shown().map((i) => { const c = ciFor(VARIANTS[i].id).score; return c[2] - c[1]; })
+      .filter(fin);
+    const maxW = widths.length ? Math.max.apply(null, widths) : 0;
+    const cs = contrastsNow();
+    const resolved = cs.filter((c) => c.d[1] > 0 || c.d[2] < 0).length;
+
+    // The execution rate and its complement used to sit here. Both are stages
+    // of the funnel card verbatim, so the tiles said nothing the funnel did not
+    // say better. The slots now carry the two figures that appear nowhere else
+    // above the fold: how far the judges disagree, and how many runs cleared
+    // the top tier.
+    const gold = rows.filter((r) => r.t === "GOLD").length;
+    const tiles = [
+      { label: "Problem-runs in view", value: String(rows.length),
+        foot: shown().length + " variants · " + (judge === "all" ? "both judges" : "one judge") },
+      { label: "Mean of scored runs", value: fx(nzMean, 1), foot: "n = " + nonzero.length },
+      { label: "Contrasts resolved", value: resolved + " / " + cs.length,
+        foot: cs.length ? "interval excludes zero" : "none meet the " + DATA.minPaired + "-problem floor" },
+      { label: "Widest judge gap", value: judgeGap() === null ? "—" : sgn(judgeGap(), 1),
+        foot: "same runs, two judges" },
+      { label: "Reached GOLD", value: String(gold), foot: pct(gold / n) + " of runs in view" }
+    ];
+    const host = document.getElementById("kpis");
+    host.replaceChildren();
+    for (const t of tiles) {
+      const c = el("div", "kpi");
+      c.appendChild(el("span", "k-label", t.label));
+      c.appendChild(el("span", "k-value", t.value));
+      c.appendChild(el("span", "k-foot", t.foot));
+      host.appendChild(c);
+    }
+
+    const lede = document.getElementById("lede");
+    lede.replaceChildren();
+    lede.appendChild(document.createTextNode(
+      "Across " + rows.length + " problem-runs, " + pct(zeros / n) + " never reached a judge, " +
+      "because the build or the run threw first and the harness recorded the exception in " +
+      "place of a score. The runs that were scored average " + fx(nzMean, 1) + ". "));
+    if (cs.length) {
+      lede.appendChild(document.createTextNode("Of " + cs.length + " one-factor contrasts in view, "));
+      lede.appendChild(el("strong", null, resolved + (resolved === 1 ? " is resolved" : " are resolved")));
+      lede.appendChild(document.createTextNode(
+        " at 95% after pairing on problem; the rest are consistent with no effect at this " +
+        "sample size. A variant's own interval is about ±" + fx(maxW / 2, 1) +
+        " points wide, which is why the comparison is made on differences rather than on means."));
+      const held = withheldNow().length;
+      if (held) lede.appendChild(document.createTextNode(
+        " A further " + held + (held === 1 ? " contrast rests" : " contrasts rest") +
+        " on fewer than " + DATA.minPaired + " shared problems and " +
+        (held === 1 ? "is" : "are") + " withheld rather than shown with an interval the " +
+        "data cannot support."));
+    } else {
+      lede.appendChild(document.createTextNode(
+        "No one-factor contrast is available in this slice, so the variants can only be " +
+        "read as separate means, each about ±" + fx(maxW / 2, 1) + " points wide."));
+    }
+  }
+
+  /* ---- contrast plot ----------------------------------------------------- */
+  function renderContrasts() {
+    const host = document.getElementById("contrasts");
+    const lg = document.getElementById("contrastlegend");
+    host.replaceChildren();
+    lg.replaceChildren();
+    const cs = contrastsNow().slice().sort((a, b) =>
+      a.factorLabel.localeCompare(b.factorLabel) || b.d[0] - a.d[0]);
+    if (!cs.length) {
+      host.appendChild(el("p", "empty",
+        withheldNow().length
+          ? "Every one-factor pair in view rests on too few shared problems to carry an "
+            + "interval, so none is drawn."
+          : "No two variants in view differ in exactly one factor, so there is nothing to " +
+            "contrast. Re-enable variants above, or add an arm that holds the rest fixed."));
+      appendWithheldNote(host);
+      return;
+    }
+
+    let m = 0;
+    for (const c of cs) m = Math.max(m, Math.abs(c.d[1]), Math.abs(c.d[2]));
+    m = Math.max(5, m * 1.08);
+    const posOf = (x) => 50 + 50 * (x / m);
+
+    const head = el("div", "caxis");
+    head.appendChild(el("span", "cu", "Factor and arms"));
+    const track = el("div", "ct");
+    [-m, -m / 2, 0, m / 2, m].forEach((v) => {
+      const s = el("span", null, (v > 0 ? "+" : "") + v.toFixed(0));
+      s.style.left = posOf(v) + "%";
+      track.appendChild(s);
+    });
+    head.appendChild(track);
+    const unit = el("span", "cu", "Δ composite");
+    unit.style.textAlign = "right";
+    head.appendChild(unit);
+    host.appendChild(head);
+
+    for (const c of cs) {
+      const resolved = c.d[1] > 0 || c.d[2] < 0;
+      const dir = c.d[0] >= 0 ? css("--div-pos") : css("--div-neg");
+      const row = el("div", "crow");
+
+      const left = el("div", "cl");
+      left.appendChild(el("span", "ctag", c.factorLabel));
+      left.appendChild(el("span", "cname", c.label));
+      left.appendChild(el("span", "charms",
+        c.arms + "   n " + c.n + " · r " + fx(c.r, 2)));
+      row.appendChild(left);
+
+      const tr = el("div", "ctrack");
+      [-m / 2, m / 2].forEach((v) => {
+        const g = el("i", "cgrid");
+        g.style.left = posOf(v) + "%";
+        tr.appendChild(g);
+      });
+      const zero = el("i", "czero");
+      zero.style.left = "50%";
+      tr.appendChild(zero);
+
+      const bar = el("i", "cbar");
+      bar.style.left = posOf(c.d[1]) + "%";
+      bar.style.width = Math.max(0, posOf(c.d[2]) - posOf(c.d[1])) + "%";
+      bar.style.background = dir;
+      tr.appendChild(bar);
+      [c.d[1], c.d[2]].forEach((v) => {
+        const cap = el("i", "ccap");
+        cap.style.left = posOf(v) + "%";
+        cap.style.background = dir;
+        tr.appendChild(cap);
+      });
+      // Solid dot means the interval clears zero; hollow means it does not.
+      // That is ink, not a fourth hue, because there are four factors in play
+      // and only three categorical slots that survive the separation check.
+      const dot = el("i", "cdot");
+      dot.style.left = posOf(c.d[0]) + "%";
+      dot.style.border = "2px solid " + dir;
+      dot.style.background = resolved ? dir : css("--surface");
+      tr.appendChild(dot);
+      row.appendChild(tr);
+
+      const val = el("div", "cv");
+      val.appendChild(el("span", "cd", sgn(c.d[0], 1)));
+      val.appendChild(el("span", "cint", "[" + sgn(c.d[1], 1) + ", " + sgn(c.d[2], 1) + "]"));
+      const st = el("span", "cstat");
+      const ic = el("span", null, resolved ? "✓" : "○");
+      ic.style.color = resolved ? css("--status-good") : css("--ink-muted");
+      st.appendChild(ic);
+      st.appendChild(el("span", null, resolved ? "resolved" : "not resolved"));
+      st.style.color = css("--ink-muted");
+      val.appendChild(st);
+      row.appendChild(val);
+
+      const held = c.held ? "held: " + c.held : "no other factor held fixed";
+      hoverable(tr, sgn(c.d[0], 1) + "  [" + sgn(c.d[1], 1) + ", " + sgn(c.d[2], 1) + "]",
+        c.arms + " · " + held + " · " + c.n + " paired problems · r " + fx(c.r, 2), dir);
+      hoverable(left, sgn(c.d[0], 1) + " composite",
+        held + " · execution rate " + sgn(c.rate[0] * 100, 1) + " pts", dir);
+      host.appendChild(row);
+    }
+
+    [["Interval excludes zero", css("--status-good"), "✓"],
+     ["Consistent with no effect", css("--ink-muted"), "○"]].forEach(([label, color, icon]) => {
+      const it = el("span", "item");
+      const s = el("span", null, icon);
+      s.style.color = color;
+      it.appendChild(s);
+      it.appendChild(document.createTextNode(label));
+      lg.appendChild(it);
+    });
+    const note = el("span", "item",
+      "blue right of zero: the tested level scored higher · red left of zero: lower");
+    note.style.color = css("--ink-muted");
+    lg.appendChild(note);
+    appendWithheldNote(host);
+  }
+
+  // Named so the reader learns a row is missing and why, instead of seeing a
+  // shorter list and assuming the pair was never run. A one-problem pair would
+  // otherwise draw a zero-width interval and read as the most certain result on
+  // the page.
+  function appendWithheldNote(host) {
+    const held = withheldNow();
+    if (!held.length) return;
+    const p = el("p", "empty");
+    p.appendChild(document.createTextNode(
+      held.length + (held.length === 1 ? " contrast is" : " contrasts are") +
+      " withheld, resting on fewer than " + DATA.minPaired + " shared problems: " +
+      held.map((c) => c.label + " (" + c.n + ")").join(", ") +
+      ". A bootstrap over that few problems returns an interval of zero width, " +
+      "which would read as certainty rather than as too little data."));
+    host.appendChild(p);
+  }
+
+  /* ---- heatmap ----------------------------------------------------------- */
+  function rateFor(vi, pi) {
+    const rows = slice().filter((r) => r.v === vi && r.p === pi);
+    if (!rows.length) return null;
+    return rows.filter((r) => r.ran).length / rows.length;
+  }
+  function seqStep(t) {
+    // t in [0,1] -> one of seven sequential steps, lightest meaning "near zero".
+    const i = Math.min(SEQ.length - 1, Math.max(0, Math.round(t * (SEQ.length - 1))));
+    return { varName: SEQ[i], ink: i >= 3 ? css("--seq-on-dark") : css("--seq-on-light") };
+  }
+  function paintRamp(id) {
+    const ramp = document.getElementById(id);
+    ramp.replaceChildren();
+    for (const s of SEQ) {
+      const i = el("i");
+      i.style.background = css(s);
+      ramp.appendChild(i);
+    }
+  }
+  function renderHeatmap() {
+    const host = document.getElementById("heatmap");
+    const vis = shown();
+    host.replaceChildren();
+    host.style.gridTemplateColumns =
+      "minmax(92px, 1.1fr) repeat(" + vis.length + ", minmax(58px, 1fr))";
+    host.appendChild(el("div"));
+    for (const vi of vis) {
+      const h = el("div", "hm-h", VARIANTS[vi].short);
+      h.title = VARIANTS[vi].label;
+      host.appendChild(h);
+    }
+
+    for (let pi = 0; pi < PROBLEMS.length; pi++) {
+      const name = el("div", "hm-r", PROBLEMS[pi]);
+      name.title = PROBLEMS[pi];
+      host.appendChild(name);
+      for (const vi of vis) {
+        const rate = rateFor(vi, pi);
+        const b = el("button", "cell");
+        b.type = "button";
+        const chosen = selection && selection.v === vi && selection.p === pi;
+        b.setAttribute("aria-pressed", String(!!chosen));
+        if (rate === null) {
+          b.style.background = css("--grid");
+          b.style.color = css("--ink-muted");
+          b.textContent = "—";
+        } else {
+          const st = seqStep(rate);
+          b.style.background = css(st.varName);
+          b.style.color = st.ink;
+          b.textContent = pct(rate);   // direct label: color never carries it alone
+        }
+        const n = slice().filter((r) => r.v === vi && r.p === pi).length;
+        b.setAttribute("aria-label", VARIANTS[vi].label + ", " + PROBLEMS[pi] + ", " +
+          (rate === null ? "no runs" : pct(rate) + " of " + n + " runs executed"));
+        hoverable(b, rate === null ? "no runs" : pct(rate) + " of " + n + " runs",
+          PROBLEMS[pi] + " · " + VARIANTS[vi].label, variantColor(vi));
+        b.addEventListener("click", () => {
+          selection = chosen ? null : { v: vi, p: pi };
+          renderHeatmap(); renderDrill();
+        });
+        host.appendChild(b);
+      }
+    }
+    paintRamp("ramp");
+  }
+
+  /* ---- strip plot -------------------------------------------------------- */
+  function renderStrip() {
+    const svg = document.getElementById("strip");
+    const vis = shown();
+    // The viewBox widens with the variant count so columns keep their width
+    // instead of crushing together as the suite grows.
+    const L = 42, R = 14, T = 16, B = 58;
+    const band = Math.max(64, Math.min(120, 460 / Math.max(1, vis.length)));
+    const W = L + R + band * vis.length, H = 340;
+    const plotH = H - T - B;
+    const y = (v) => T + plotH * (1 - v / 100);
+    svg.setAttribute("viewBox", "0 0 " + W + " " + H);
+    svg.replaceChildren();
+    add(svg, "title", { id: "striptitle" }).textContent =
+      "Composite score of every problem-run, grouped by purple variant";
+
+    for (let v = 0; v <= 100; v += 25) {
+      add(svg, "line", { class: "gridline", x1: L, x2: W - R, y1: y(v), y2: y(v) });
+      add(svg, "text", { class: "tick", x: L - 8, y: y(v) + 3.5, "text-anchor": "end" })
+        .textContent = String(v);
+    }
+    add(svg, "line", { class: "baseline", x1: L, x2: W - R, y1: y(0), y2: y(0) });
+
+    vis.forEach((vi, k) => {
+      const cx = L + band * (k + 0.5);
+      const color = variantColor(vi);
+      const rows = slice().filter((r) => r.v === vi);
+      const c = ciFor(VARIANTS[vi].id).score;
+      const halfCap = Math.min(26, band * 0.3);
+
+      if (fin(c[1]) && fin(c[2])) {
+        add(svg, "line", { class: "baseline", x1: cx - halfCap, x2: cx + halfCap, y1: y(c[1]), y2: y(c[1]) });
+        add(svg, "line", { class: "baseline", x1: cx - halfCap, x2: cx + halfCap, y1: y(c[2]), y2: y(c[2]) });
+        add(svg, "line", { class: "baseline", x1: cx, x2: cx, y1: y(c[1]), y2: y(c[2]) });
+      }
+
+      rows.forEach((r, i) => {
+        // Deterministic spread so the view is stable across rerenders.
+        const jitter = ((i * 2654435761) % 1000) / 1000 - 0.5;
+        const x = cx + jitter * Math.min(band - 22, 70);
+        const g = add(svg, "g", { class: "hit", tabindex: "0", role: "button" });
+        add(g, "circle", { cx: x, cy: y(r.s), r: 12, fill: "transparent" });   // 24px hit area
+        add(g, "circle", {
+          cx: x, cy: y(r.s), r: 4.2, fill: color, stroke: css("--surface"),
+          "stroke-width": 2, "fill-opacity": 0.85
+        });
+        const lab = PROBLEMS[r.p] + " · run " + r.r + " · " + DATA.judges[r.j].label;
+        g.setAttribute("aria-label", VARIANTS[vi].label + ", " + lab + ", score " + fx(r.s, 1));
+        hoverable(g, fx(r.s, 1) + (r.fc ? "  (" + r.fc.toLowerCase() + ")" : ""),
+          VARIANTS[vi].label + " · " + lab, color);
+        const pick = () => { selection = { v: r.v, p: r.p }; renderHeatmap(); renderDrill(); };
+        g.addEventListener("click", pick);
+        g.addEventListener("keydown", (e) => {
+          if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pick(); }
+        });
+      });
+
+      // A partial arm still gets its mean drawn, because hiding it would be a
+      // worse lie than showing it, but the number is dimmed and the column
+      // carries its coverage so it is never read as a peer of a full arm.
+      const partial = thin(vi);
+      const dl = add(svg, "text", { class: "dlabel", x: cx, y: H - B + 38, "text-anchor": "middle" });
+      dl.textContent = fx(c[0], 1);
+      if (partial) {
+        dl.setAttribute("fill", css("--ink-muted"));
+        add(svg, "text", {
+          x: cx, y: H - B + 52, "text-anchor": "middle", "font-size": 9.5,
+          fill: css("--status-warning")
+        }).textContent = "⚠ " + coverage(vi) + "/" + DATA.nProblems + " problems";
+      }
+      const nm = add(svg, "text", {
+        x: cx, y: H - B + 20, "text-anchor": "middle", "font-size": 10.5, fill: css("--ink-2")
+      });
+      nm.textContent = VARIANTS[vi].short;
+      add(nm, "title", {}).textContent = VARIANTS[vi].label;
+    });
+
+    add(svg, "text", {
+      x: 4, y: T + plotH / 2, "font-size": 10, fill: css("--ink-muted"),
+      transform: "rotate(-90 4 " + (T + plotH / 2) + ")", "text-anchor": "middle"
+    }).textContent = "composite score";
+
+    const lg = document.getElementById("striplegend");
+    lg.replaceChildren();
+    colorLegend(lg);
+    const ci = el("span", "item");
+    const dash = el("span", "dash");
+    dash.style.background = css("--axis");
+    ci.appendChild(dash);
+    ci.appendChild(document.createTextNode("bootstrap 95% CI over problems"));
+    lg.appendChild(ci);
+  }
+
+  function colorLegend(host) {
+    const f = FACTORS.find((x) => x.key === colorBy);
+    if (!f) return;
+    const title = el("span", "item", f.label + ":");
+    title.style.color = css("--ink-muted");
+    host.appendChild(title);
+    for (const lv of colorLevels()) {
+      const it = el("span", "item");
+      const sw = el("span", "swatch");
+      sw.style.background = lv.color;
+      it.appendChild(sw);
+      it.appendChild(document.createTextNode(lv.folded ? lv.label + " (other)" : lv.label));
+      host.appendChild(it);
+    }
+  }
+
+  /* ---- funnel ------------------------------------------------------------ */
+  function renderFunnel() {
+    const rows = slice();
+    const n = rows.length;
+    const stages = [
+      { label: "Submitted", n: n },
+      { label: "Compiled", n: rows.filter((r) => r.comp).length },
+      { label: "Executed", n: rows.filter((r) => r.ran).length },
+      // Every run that executes clears all four gates in this data, so a gates
+      // stage here would just repeat the one above it. Scored >= 50 is the
+      // first stage after execution that actually separates runs.
+      { label: "Scored ≥ 50", n: rows.filter((r) => r.s >= 50).length },
+      { label: "Reached GOLD", n: rows.filter((r) => r.t === "GOLD").length }
+    ];
+    const host = document.getElementById("funnel");
+    host.replaceChildren();
+    stages.forEach((s, i) => {
+      const row = el("div", "fstage");
+      row.appendChild(el("span", "fl", s.label));
+      const track = el("div", "ftrack");
+      const fill = el("div", "ffill");
+      fill.style.width = (n ? (s.n / n) * 100 : 0) + "%";
+      // Ordinal ramp: later stages darker, so depth reads as progression.
+      const color = css(SEQ[Math.min(SEQ.length - 1, 1 + i)]);
+      fill.style.background = color;
+      track.appendChild(fill);
+      row.appendChild(track);
+      const v = el("span", "fv");
+      v.appendChild(document.createTextNode(n ? pct(s.n / n) : "—"));
+      v.appendChild(el("small", null, "  " + s.n));
+      row.appendChild(v);
+      hoverable(track, s.n + " of " + n, s.label, color);
+      host.appendChild(row);
+    });
+  }
+
+  /* ---- failure modes ----------------------------------------------------- */
+  // Status roles, not categorical slots: an outcome is a state, and borrowing
+  // the series hues would make a failure mode look like a factor level. Each
+  // role ships with an icon so the color never carries the meaning alone. The
+  // draw order comes from DATA.failure_classes, which is ordered for separation
+  // rather than severity -- see the note on FAILURE_CLASSES in load_results.py.
+  const OUTCOME = {
+    "Executed":            { v: "--status-good",     ic: "✓" },
+    "Compile failure":     { v: "--status-warning",  ic: "⚠" },
+    "Segfault":            { v: "--status-critical", ic: "✕" },
+    "PETSc runtime error": { v: "--status-serious",  ic: "◆" },
+    "Nonzero exit":        { v: "--status-neutral",  ic: "●" },
+    "Other":               { v: "--ink-muted",       ic: "○" }
+  };
+  function outcomesInView() {
+    const rows = slice();
+    const out = ["Executed"];
+    for (const c of DATA.failure_classes) if (rows.some((r) => r.fc === c)) out.push(c);
+    return out;
+  }
+  function renderFailureModes() {
+    const rows = slice();
+    const kinds = outcomesInView();
+    const groups = shown().map((vi) => ({ name: VARIANTS[vi].short, full: VARIANTS[vi].label,
+                                          rows: rows.filter((r) => r.v === vi) }));
+    // Worst first, so whatever needs attention sits at the top.
+    groups.forEach((g) => {
+      g.n = g.rows.length;
+      g.bad = g.rows.filter((r) => r.fc).length;
+    });
+    groups.sort((a, b) => (b.bad / (b.n || 1)) - (a.bad / (a.n || 1)) || a.name.localeCompare(b.name));
+
+    const host = document.getElementById("failmodes");
+    host.replaceChildren();
+    for (const g of groups) {
+      if (!g.n) continue;
+      const row = el("div", "fmrow");
+      const label = el("span", "fml", g.name);
+      if (g.full) label.title = g.full;
+      row.appendChild(label);
+      const track = el("div", "fmtrack");
+      for (const k of kinds) {
+        const n = g.rows.filter((r) => (k === "Executed" ? !r.fc : r.fc === k)).length;
+        if (!n) continue;
+        const color = css(OUTCOME[k].v);
+        const seg = el("div", "fmseg");
+        seg.style.width = (n / g.n) * 100 + "%";
+        seg.style.background = color;
+        hoverable(seg, n + " of " + g.n, OUTCOME[k].ic + "  " + k + " · " + (g.full || g.name), color);
+        track.appendChild(seg);
+      }
+      row.appendChild(track);
+      row.appendChild(el("span", "fmn", g.bad ? g.bad + "/" + g.n : "—"));
+      host.appendChild(row);
+    }
+
+    const lg = document.getElementById("fmlegend");
+    lg.replaceChildren();
+    for (const k of kinds) {
+      const item = el("span", "item");
+      const sw = el("span", "swatch");
+      sw.style.background = css(OUTCOME[k].v);
+      item.appendChild(sw);
+      item.appendChild(document.createTextNode(OUTCOME[k].ic + " " + k));
+      lg.appendChild(item);
+    }
+    const tail = el("span", "item", "right column: runs that threw / runs attempted");
+    tail.style.color = css("--ink-muted");
+    lg.appendChild(tail);
+  }
+
+  /* ---- judge matrix ------------------------------------------------------ */
+  function renderJudgeMatrix() {
+    const t = document.getElementById("judgematrix");
+    const vis = shown();
+    t.replaceChildren();
+    const thead = el("thead"), hr = el("tr");
+    hr.appendChild(el("th", null, "Variant under test"));
+    for (const j of JUDGES) hr.appendChild(el("th", null, j.label));
+    hr.appendChild(el("th", null, "Difference"));
+    thead.appendChild(hr);
+    t.appendChild(thead);
+
+    const meansFor = (vi) => JUDGES.map((j) =>
+      mean(DATA.rows.filter((r) => r.v === vi && DATA.judges[r.j].id === j.id).map((r) => r.s)));
+    const deltas = vis.map((vi) => {
+      const m = meansFor(vi);
+      return m.length === 2 && m[0] !== null && m[1] !== null ? m[0] - m[1] : null;
+    });
+    const maxAbs = Math.max.apply(null, deltas.map((d) => Math.abs(d || 0)).concat([1]));
+
+    const tbody = el("tbody");
+    vis.forEach((vi, k) => {
+      const tr = el("tr");
+      const first = el("td");
+      const nm = el("span", "agentname");
+      const dot = el("span", "dot");
+      dot.style.background = variantColor(vi);
+      nm.appendChild(dot);
+      nm.appendChild(document.createTextNode(VARIANTS[vi].short));
+      first.title = VARIANTS[vi].label;
+      first.appendChild(nm);
+      tr.appendChild(first);
+
+      const m = meansFor(vi);
+      JUDGES.forEach((j, ji) => {
+        const td = el("td", null, m[ji] === null ? "—" : fx(m[ji], 1));
+        // Emphasis rather than removal: filtering by judge dims the other
+        // column instead of collapsing the comparison this card exists to make.
+        if (judge !== "all" && judge !== j.id) td.style.opacity = "0.42";
+        tr.appendChild(td);
+      });
+
+      const d = deltas[k];
+      const dt = el("td");
+      const bar = el("div", "deltabar");
+      const lft = el("i", "l"), rgt = el("i", "r");
+      const w = d === null ? 0 : (Math.abs(d) / maxAbs) * 100;
+      if (d !== null && d < 0) { lft.style.width = w + "%"; lft.style.background = css("--div-neg"); }
+      else if (d !== null) { rgt.style.width = w + "%"; rgt.style.background = css("--div-pos"); }
+      bar.appendChild(lft); bar.appendChild(rgt);
+      dt.appendChild(bar);
+      const num = el("div", null, d === null ? "—" : sgn(d, 1));
+      num.style.fontSize = "11.5px";
+      num.style.color = css("--ink-2");
+      dt.appendChild(num);
+      if (d !== null && JUDGES.length === 2) {
+        hoverable(dt, sgn(d, 1) + " points",
+          VARIANTS[vi].label + ": " + JUDGES[0].label + " minus " + JUDGES[1].label, null);
+      }
+      tr.appendChild(dt);
+      tbody.appendChild(tr);
+    });
+    t.appendChild(tbody);
+  }
+
+  /* ---- category profile, as a matrix ------------------------------------- */
+  // Grouped bars would need one hue per variant, which breaks the three-slot
+  // budget the moment a fourth variant exists. A matrix spends no categorical
+  // color at all and stays readable at any variant count.
+  function renderCatMatrix() {
+    const host = document.getElementById("catmatrix");
+    const cats = DATA.categories;
+    const vis = shown();
+    const passing = slice().filter((r) => r.gt > 0 && r.gp === r.gt);
+    host.replaceChildren();
+    host.style.gridTemplateColumns =
+      "minmax(92px, 1.2fr) repeat(" + cats.length + ", minmax(62px, 1fr))";
+    host.appendChild(el("div"));
+    for (const c of cats) {
+      const h = el("div", "hm-h");
+      h.appendChild(document.createTextNode(CAT_LABELS[c] || c));
+      const w = el("div", null, "w " + DATA.weights[c]);
+      w.style.color = css("--ink-muted");
+      w.style.fontWeight = "400";
+      w.style.fontSize = "10px";
+      h.appendChild(w);
+      host.appendChild(h);
+    }
+    for (const vi of vis) {
+      const name = el("div", "hm-r", VARIANTS[vi].short);
+      name.title = VARIANTS[vi].label;
+      host.appendChild(name);
+      for (const c of cats) {
+        const vals = passing.filter((r) => r.v === vi && typeof r.cat[c] === "number")
+          .map((r) => r.cat[c]);
+        const m = mean(vals);
+        const cell = el("div", "cell flat");
+        if (m === null) {
+          cell.style.background = css("--grid");
+          cell.style.color = css("--ink-muted");
+          cell.textContent = "—";
+        } else {
+          const st = seqStep(m / 100);
+          cell.style.background = css(st.varName);
+          cell.style.color = st.ink;
+          cell.textContent = fx(m, 0);   // direct label on every cell
+        }
+        cell.setAttribute("tabindex", "0");
+        cell.setAttribute("aria-label", VARIANTS[vi].label + ", " + (CAT_LABELS[c] || c) +
+          ", mean " + fx(m, 1) + " over " + vals.length + " scored runs");
+        hoverable(cell, fx(m, 1), VARIANTS[vi].label + " · " + (CAT_LABELS[c] || c) +
+          " · n = " + vals.length, variantColor(vi));
+        host.appendChild(cell);
+      }
+    }
+    paintRamp("catramp");
+    document.getElementById("catn").textContent =
+      passing.length + " scored runs of " + slice().length;
+  }
+
+  /* ---- cost vs score ----------------------------------------------------- */
+  function renderPareto() {
+    const svg = document.getElementById("pareto");
+    const vis = shown();
+    const W = 560, H = 330, L = 50, R = 96, T = 16, B = 46;
+    const plotW = W - L - R, plotH = H - T - B;
+    svg.replaceChildren();
+    add(svg, "title", { id: "paretotitle" }).textContent =
+      "Mean tokens against mean composite score, one point per purple variant";
+
+    const pts = vis.map((vi) => {
+      const rows = slice().filter((r) => r.v === vi);
+      const c = ciFor(VARIANTS[vi].id).score;
+      return { vi: vi, tok: mean(rows.map((r) => r.tok || 0)) || 0,
+               score: c[0], lo: c[1], hi: c[2], n: rows.length };
+    }).filter((p) => fin(p.score));
+    const maxTok = Math.max(1, Math.max.apply(null, pts.map((p) => p.tok))) * 1.12;
+    const x = (t) => L + plotW * (t / maxTok);
+    const y = (v) => T + plotH * (1 - v / 100);
+
+    for (let v = 0; v <= 100; v += 25) {
+      add(svg, "line", { class: "gridline", x1: L, x2: L + plotW, y1: y(v), y2: y(v) });
+      add(svg, "text", { class: "tick", x: L - 8, y: y(v) + 3.5, "text-anchor": "end" })
+        .textContent = String(v);
+    }
+    add(svg, "line", { class: "baseline", x1: L, x2: L + plotW, y1: y(0), y2: y(0) });
+    for (let k = 0; k <= 4; k++) {
+      const t = (maxTok / 4) * k;
+      add(svg, "text", { class: "tick", x: x(t), y: H - B + 16, "text-anchor": "middle" })
+        .textContent = t >= 1000 ? (t / 1000).toFixed(0) + "k" : t.toFixed(0);
+    }
+    add(svg, "text", {
+      x: L + plotW / 2, y: H - B + 34, "text-anchor": "middle",
+      "font-size": 10.5, fill: css("--ink-muted")
+    }).textContent = "mean tokens per problem-run";
+    add(svg, "text", {
+      x: 4, y: T + plotH / 2, "font-size": 10, fill: css("--ink-muted"),
+      transform: "rotate(-90 4 " + (T + plotH / 2) + ")", "text-anchor": "middle"
+    }).textContent = "mean composite";
+
+    // Direct labels, nudged apart so two close variants never overprint.
+    const placed = pts.map((p) => ({ p: p, ly: y(p.score) }))
+      .sort((a, b) => a.ly - b.ly);
+    for (let i = 1; i < placed.length; i++) {
+      if (placed[i].ly - placed[i - 1].ly < 13) placed[i].ly = placed[i - 1].ly + 13;
+    }
+
+    for (const q of placed) {
+      const p = q.p;
+      const color = variantColor(p.vi);
+      const g = add(svg, "g", { class: "hit", tabindex: "0", role: "button" });
+      add(g, "circle", { cx: x(p.tok), cy: y(p.score), r: 12, fill: "transparent" });
+      // The vertical whisker is the point of this card as much as the dot is.
+      // Four means plotted bare imply a cost-quality ordering, and at these
+      // interval widths there is no ordering to read.
+      if (fin(p.lo) && fin(p.hi)) {
+        add(g, "line", {
+          x1: x(p.tok), x2: x(p.tok), y1: y(p.lo), y2: y(p.hi),
+          stroke: color, "stroke-width": 2, "stroke-opacity": 0.42, "stroke-linecap": "round"
+        });
+      }
+      add(g, "circle", {
+        cx: x(p.tok), cy: y(p.score), r: 5.5, fill: color,
+        stroke: css("--surface"), "stroke-width": 2
+      });
+      add(g, "line", {
+        x1: x(p.tok) + 8, x2: L + plotW + 6, y1: y(p.score), y2: q.ly,
+        stroke: css("--grid"), "stroke-width": 1
+      });
+      const lab = add(g, "text", {
+        x: L + plotW + 10, y: q.ly + 3.5, "font-size": 11, fill: css("--ink-2")
+      });
+      lab.textContent = VARIANTS[p.vi].short;
+      g.setAttribute("aria-label", VARIANTS[p.vi].label + ", mean composite " +
+        fx(p.score, 1) + ", mean " + Math.round(p.tok).toLocaleString() + " tokens");
+      hoverable(g, fx(p.score, 1) + " @ " + Math.round(p.tok).toLocaleString() + " tok",
+        VARIANTS[p.vi].label + " · " + p.n + " runs · 95% [" +
+        fx(p.lo, 1) + ", " + fx(p.hi, 1) + "]", color);
+    }
+
+    const lg = document.getElementById("paretolegend");
+    lg.replaceChildren();
+    colorLegend(lg);
+  }
+
+  /* ---- variance and budget ----------------------------------------------- */
+  function renderVariance() {
+    const vc = varianceNow();
+    const host = document.getElementById("variance");
+    host.replaceChildren();
+    const total = Math.max(1e-9, vc.between + vc.within);
+    const parts = [
+      { label: "Between problems", v: vc.between, step: 5 },
+      { label: "Within problem", v: vc.within, step: 2 }
+    ];
+    for (const p of parts) {
+      const row = el("div", "fstage");
+      row.appendChild(el("span", "fl", p.label));
+      const track = el("div", "ftrack");
+      const fill = el("div", "ffill");
+      fill.style.width = (p.v / total) * 100 + "%";
+      const color = css(SEQ[p.step]);
+      fill.style.background = color;
+      track.appendChild(fill);
+      row.appendChild(track);
+      const v = el("span", "fv");
+      v.appendChild(document.createTextNode(pct(p.v / total)));
+      v.appendChild(el("small", null, "  σ² " + fx(p.v, 0)));
+      row.appendChild(v);
+      hoverable(track, fx(p.v, 0) + " of " + fx(total, 0), p.label + " variance", color);
+      host.appendChild(row);
+    }
+
+    const half = (P, R) => 1.96 * Math.sqrt(vc.between / P + vc.within / (P * R));
+    const P = Math.max(1, vc.problems), R = Math.max(1, vc.runs);
+    const plan = [
+      { label: "Now", P: P, R: R, now: true },
+      { label: "Twice the runs", P: P, R: R * 2 },
+      { label: "Twice the problems", P: P * 2, R: R },
+      { label: "Twice both", P: P * 2, R: R * 2 }
+    ];
+    const base = half(P, R);
+    const t = document.getElementById("projection");
+    t.replaceChildren();
+    const thead = el("thead"), hr = el("tr");
+    for (const c of ["Suite", "Problems", "Runs each", "Runs total", "95% half-width", "vs now"])
+      hr.appendChild(el("th", null, c));
+    thead.appendChild(hr);
+    t.appendChild(thead);
+    const tb = el("tbody");
+    for (const pl of plan) {
+      const h = half(pl.P, pl.R);
+      const tr = el("tr", pl.now ? "now" : null);
+      [pl.label, String(pl.P), String(pl.R), String(pl.P * pl.R),
+       "±" + fx(h, 1), pl.now ? "—" : pct(h / base - 1)
+      ].forEach((v) => tr.appendChild(el("td", null, v)));
+      tb.appendChild(tr);
+    }
+    t.appendChild(tb);
+  }
+
+  /* ---- drill-down -------------------------------------------------------- */
+  function renderDrill() {
+    const host = document.getElementById("runlist");
+    const ctx = document.getElementById("drillctx");
+    host.replaceChildren();
+
+    let rows = slice();
+    let target = selection;
+    if (target && !active.has(target.v)) target = null;
+    if (target) {
+      rows = rows.filter((r) => r.v === target.v && r.p === target.p);
+      ctx.textContent = PROBLEMS[target.p] + "  ·  " + VARIANTS[target.v].label +
+        "  ·  " + rows.length + " runs  ·  select the cell again to clear";
+    } else {
+      // Open on the worst cell, so the page lands in a working state.
+      let worst = null;
+      for (const vi of shown()) {
+        for (let pi = 0; pi < PROBLEMS.length; pi++) {
+          const rate = rateFor(vi, pi);
+          if (rate === null) continue;
+          if (!worst || rate < worst.rate) worst = { v: vi, p: pi, rate: rate };
+        }
+      }
+      if (worst) {
+        rows = rows.filter((r) => r.v === worst.v && r.p === worst.p);
+        ctx.textContent = PROBLEMS[worst.p] + "  ·  " + VARIANTS[worst.v].label +
+          "  ·  lowest execution rate in view  ·  select any cell to change";
+      } else {
+        ctx.textContent = "no runs in view";
+      }
+    }
+
+    rows.sort((a, b) => a.r - b.r || a.j - b.j);
+    for (const r of rows) host.appendChild(runNode(r));
+    if (!rows.length) host.appendChild(el("p", "empty", "No runs match the current filters."));
+  }
+
+  // How this run's composite was assembled, metric by metric. The evaluator
+  // rows below are the raw verdicts and the category matrix above is their mean
+  // over a whole variant; neither shows the rollup for one run, so a score like
+  // 54.2 arrives asserted. The contributions sum to the composite exactly, so
+  // the total row is a check the reader can run rather than a restatement.
+  function metricStrip(r) {
+    const cats = DATA.categories.filter((c) => typeof r.cat[c] === "number");
+    if (!cats.length) return null;
+    const wrap = el("div", "metrics");
+    const hd = el("div", "mrow mhead");
+    ["Metric", "", "Score", "Weight", "Adds"].forEach((t, i) => {
+      const c = el("span", null, t);
+      if (i === 1) c.style.visibility = "hidden";
+      hd.appendChild(c);
+    });
+    wrap.appendChild(hd);
+    let total = 0;
+    for (const c of cats) {
+      const v = r.cat[c], w = DATA.weights[c];
+      // Sum what the column shows, not the unrounded product. A total that
+      // disagrees with the visible figures by a tenth would turn the one row
+      // meant to be checkable into the one row that looks wrong.
+      const adds = Math.round(v * w * 10) / 10;
+      total += adds;
+      const row = el("div", "mrow");
+      row.appendChild(el("span", "mname", CAT_LABELS[c] || c));
+      const track = el("span", "mtrack");
+      const fill = el("span", "mfill");
+      fill.style.width = Math.max(0, Math.min(100, v)) + "%";
+      fill.style.background = css(seqStep(v / 100).varName);
+      track.appendChild(fill);
+      row.appendChild(track);
+      row.appendChild(el("span", "mval", fx(v, 0)));
+      row.appendChild(el("span", "mw", "× " + w.toFixed(2)));
+      row.appendChild(el("span", "mcon", fx(adds, 1)));
+      row.setAttribute("aria-label", (CAT_LABELS[c] || c) + ", score " + fx(v, 1) +
+        " of 100, weight " + w + ", contributes " + fx(adds, 1) + " to the composite");
+      wrap.appendChild(row);
+    }
+    const tot = el("div", "mrow mtot");
+    tot.appendChild(el("span", "mname", "Composite"));
+    tot.appendChild(el("span"));
+    tot.appendChild(el("span"));
+    // Only the metrics the run actually carries are summed. If the harness
+    // dropped one, or the stored score was not produced by this weighting, the
+    // total will not match the headline and the row says so. Hiding the gap
+    // behind the stored value is how a rubric change goes unnoticed.
+    const flags = [];
+    if (cats.length < DATA.categories.length) {
+      flags.push(cats.length + "/" + DATA.categories.length);
+    }
+    if (Math.abs(total - r.s) > 0.1) flags.push("≠ " + fx(r.s, 1));
+    const fl = el("span", "mw", flags.join("  "));
+    if (flags.length) fl.style.color = css("--status-warning");
+    tot.appendChild(fl);
+    tot.appendChild(el("span", "mcon", fx(total, 1)));
+    wrap.appendChild(tot);
+    return wrap;
+  }
+
+  function runNode(r) {
+    const d = el("details", "run");
+    const s = el("summary");
+    s.appendChild(el("span", "chev", "›"));
+    s.appendChild(el("span", "rname", "run " + r.r));
+    s.appendChild(el("span", "rmeta", DATA.judges[r.j].label + " judging · " + fx(r.wt, 1) + "s" +
+      (r.tok ? " · " + r.tok.toLocaleString() + " tok" : "")));
+    const tier = el("span", "pill " + (r.t === "FAIL" ? "fail" : "pass"));
+    tier.appendChild(el("span", "ic", r.t === "FAIL" ? "✕" : "✓"));
+    tier.appendChild(document.createTextNode(r.t));
+    s.appendChild(tier);
+    s.appendChild(el("span", "rscore", fx(r.s, 1)));
+    d.appendChild(s);
+
+    const body = el("div", "body");
+    if (r.err) {
+      const kind = OUTCOME[r.fc] || OUTCOME["Other"];
+      const banner = el("p", "abortbanner");
+      const icon = el("span", "ic", kind.ic);
+      icon.style.color = css(kind.v);
+      banner.appendChild(icon);
+      banner.appendChild(document.createTextNode(
+        (r.fc || "Run aborted") + ". The harness caught this before any evaluator ran, " +
+        "so the zero below is the absence of a verdict rather than one."));
+      body.appendChild(banner);
+      body.appendChild(el("pre", "errbox", r.err));
+      if (r.errlen > r.err.length) {
+        body.appendChild(el("p", "errnote",
+          "Showing the first " + r.err.length.toLocaleString() + " of " +
+          r.errlen.toLocaleString() + " characters. Full text in " + r.src + "."));
+      }
+    }
+    const ms = metricStrip(r);
+    if (ms) body.appendChild(ms);
+    if (r.cli) body.appendChild(el("div", "cliline", r.cli));
+    for (const f of r.code) body.appendChild(sourceNode(f));
+    for (const e of r.ev) {
+      const row = el("div", "evrow");
+      const head = el("div", "evhead");
+      head.appendChild(el("span", "evname", e.n));
+      head.appendChild(el("span", "pill", e.t));
+      if (e.p !== null && e.p !== undefined) {
+        const p = el("span", "pill " + (e.p ? "pass" : "fail"));
+        p.appendChild(el("span", "ic", e.p ? "✓" : "✕"));
+        p.appendChild(document.createTextNode(e.p ? "pass" : "fail"));
+        head.appendChild(p);
+      }
+      const bits = [];
+      if (typeof e.s === "number") bits.push("score " + e.s.toFixed(2));
+      if (typeof e.c === "number") bits.push("conf " + e.c.toFixed(2));
+      if (e.m && e.m !== "deterministic") bits.push(e.m);
+      if (bits.length) head.appendChild(el("span", "evscore", bits.join("  ·  ")));
+      row.appendChild(head);
+      if (e.f) row.appendChild(el("p", "evfb", e.f));
+      body.appendChild(row);
+    }
+    if (!r.ev.length && !r.err) {
+      body.appendChild(el("p", "evfb", "No evaluator detail recorded for this run."));
+    }
+    d.appendChild(body);
+    return d;
+  }
+
+  // The source a purple actually submitted, line-numbered and plain. No
+  // highlighting library: the page stays self-contained and works offline, and
+  // a C file at this size reads fine without it. Lines are built on first open
+  // so a drill-down of twenty runs does not lay out twenty thousand rows up
+  // front.
+  function sourceNode(f) {
+    const det = el("details", "src");
+    const sum = el("summary");
+    sum.appendChild(el("span", "chev", "›"));
+    sum.appendChild(el("span", "sname", f.f));
+    const lines = f.t.split("\n");
+    sum.appendChild(el("span", "smeta",
+      lines.length + " lines · sha " + f.h));
+    const copy = el("button", "copy", "copy");
+    copy.type = "button";
+    sum.appendChild(copy);
+    det.appendChild(sum);
+
+    const code = el("div", "code");
+    det.appendChild(code);
+
+    copy.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const done = (msg) => {
+        copy.textContent = msg;
+        setTimeout(() => { copy.textContent = "copy"; }, 1600);
+      };
+      try {
+        navigator.clipboard.writeText(f.t).then(() => done("copied"), () => {
+          // Some embedded viewers refuse the clipboard outright; selecting the
+          // text is the fallback that always works.
+          det.open = true;
+          fill();
+          selectNode(code);
+          done("select, then copy");
+        });
+      } catch (err) {
+        det.open = true;
+        fill();
+        selectNode(code);
+        done("select, then copy");
+      }
+    });
+
+    let filled = false;
+    function fill() {
+      if (filled) return;
+      filled = true;
+      const frag = document.createDocumentFragment();
+      lines.forEach((text, i) => {
+        const row = el("div", "cline");
+        row.appendChild(el("span", "ln", String(i + 1)));
+        row.appendChild(el("span", "lt", text));
+        frag.appendChild(row);
+      });
+      code.appendChild(frag);
+    }
+    det.addEventListener("toggle", () => { if (det.open) fill(); });
+    return det;
+  }
+
+  function selectNode(node) {
+    try {
+      const range = document.createRange();
+      range.selectNodeContents(node);
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+    } catch (err) { /* selection is a convenience, never a requirement */ }
+  }
+
+  /* ---- table view -------------------------------------------------------- */
+  function renderTable() {
+    const t = document.getElementById("datatable");
+    t.replaceChildren();
+    const cats = DATA.categories;
+    // Per-metric scores sit between Score and Tier because that is what they
+    // explain. The charts above only ever show them averaged over a whole
+    // variant, so this is the only place the per-problem-per-run vector is
+    // readable, and the only place a metric can be compared across problems.
+    const catCls = (i) => "cat" + (i === 0 ? " catfirst" : "") +
+                   (i === cats.length - 1 ? " catlast" : "");
+    const head = [{ t: "Problem" }, { t: "Variant" }]
+      .concat(FACTORS.map((f) => ({ t: f.label })),
+              [{ t: "Judge" }, { t: "Run" }, { t: "Score" }],
+              cats.map((c, i) => ({ t: CAT_LABELS[c] || c, w: DATA.weights[c], cls: catCls(i) })),
+              [{ t: "Tier" }, { t: "Compiled" }, { t: "Executed" }, { t: "Outcome" },
+               { t: "Wall s" }, { t: "Tokens" }]);
+    const thead = el("thead"), hr = el("tr");
+    for (const c of head) {
+      const th = el("th", c.cls || null, c.t);
+      if (c.w !== undefined) th.appendChild(el("span", "thw", "w " + c.w));
+      hr.appendChild(th);
+    }
+    thead.appendChild(hr);
+    t.appendChild(thead);
+    const tb = el("tbody");
+    const rows = slice().slice().sort((a, b) => a.p - b.p || a.v - b.v || a.j - b.j || a.r - b.r);
+    for (const r of rows) {
+      const tr = el("tr");
+      const v = VARIANTS[r.v];
+      const cells = [{ t: PROBLEMS[r.p] }, { t: v.short }]
+        .concat(FACTORS.map((f) => ({ t: v.flabels[f.key] })),
+                [{ t: DATA.judges[r.j].label }, { t: String(r.r) }, { t: fx(r.s, 1) }],
+                // A run that never reached a judge has no metric vector at all,
+                // so these read as em dashes rather than as zeros. A zero here
+                // would claim the evaluator looked and found nothing.
+                cats.map((c, i) => ({ t: fx(r.cat[c], 0), cls: catCls(i) })),
+                [{ t: r.t }, { t: r.comp ? "yes" : "no" }, { t: r.ran ? "yes" : "no" },
+                 { t: r.fc || "scored " + r.gp + "/" + r.gt + " gates" },
+                 { t: fx(r.wt, 1) }, { t: r.tok ? r.tok.toLocaleString() : "—" }]);
+      for (const c of cells) tr.appendChild(el("td", c.cls || null, c.t));
+      tb.appendChild(tr);
+    }
+    t.appendChild(tb);
+  }
+
+  /* ---- orchestration ----------------------------------------------------- */
+  function renderAll() {
+    renderChromeState();
+    renderChips();
+    renderKpis();
+    renderContrasts();
+    renderHeatmap();
+    renderStrip();
+    renderFunnel();
+    renderFailureModes();
+    renderJudgeMatrix();
+    renderCatMatrix();
+    renderPareto();
+    renderVariance();
+    renderDrill();
+    if (showTable) renderTable();
+  }
+  function renderChromeState() {
+    const sync = (id, opts, isOn) => {
+      const seg = document.getElementById(id);
+      Array.prototype.forEach.call(seg.children, (b, i) => {
+        b.setAttribute("aria-pressed", String(isOn(opts[i])));
+      });
+    };
+    sync("judgeseg", [{ id: "all" }].concat(JUDGES), (o) => judge === o.id);
+    if (FACTORS.length > 1) sync("colorseg", FACTORS, (o) => colorBy === o.key);
+  }
+
+  renderChrome();
+  renderAll();
+  window.addEventListener("resize", hideTip);
+})();
+</script>
+
