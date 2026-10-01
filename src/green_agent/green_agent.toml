@@ -41,7 +41,7 @@ url = "https://www.anl.gov"
 # ── Capabilities ─────────────────────────────────────────────
 
 [capabilities]
-streaming = false
+streaming = true
 pushNotifications = false
 stateTransitionHistory = false
 
