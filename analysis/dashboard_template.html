@@ -153,8 +153,12 @@ table.data th .thw {
   font-size: 10.5px; color: var(--ink-muted); text-transform: uppercase;
   letter-spacing: 0.05em; text-align: center; align-self: end; padding-bottom: 4px;
   overflow-wrap: anywhere;
+  border: 0; background: none; font-family: inherit; cursor: pointer;
 }
+.g-h.on { color: var(--ink); font-weight: 700; }
+.g-h:hover { color: var(--ink); text-decoration: underline; }
 .g-r { font-size: 12.5px; display: flex; align-items: center; padding-right: 8px; }
+.g-r.on { color: var(--ink); font-weight: 700; }
 .cell {
   border: 0; cursor: pointer; font-family: var(--font-mono); font-size: 12.5px;
   font-variant-numeric: tabular-nums; border-radius: 5px; min-height: 36px;
@@ -168,7 +172,16 @@ table.data th .thw {
 
 /* ---- detail -------------------------------------------------------------- */
 .ctx { font-family: var(--font-mono); font-size: 11.5px; color: var(--ink-muted); }
+.ctx .who { color: var(--ink); font-weight: 700; font-size: 13px; }
 .runlist { display: flex; flex-direction: column; gap: 8px; }
+.ghead {
+  display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+  padding: 6px 2px 2px; border-top: 1px solid var(--hair); margin-top: 6px;
+}
+.ghead:first-child { border-top: 0; margin-top: 0; }
+.ghead .gname { font-weight: 700; font-size: 13.5px; }
+.ghead .gmeta { font-family: var(--font-mono); font-size: 11.5px; color: var(--ink-muted); }
+.ghead.on .gname { text-decoration: underline; text-underline-offset: 3px; }
 .run { border: 1px solid var(--hair); border-radius: 9px; background: var(--plane); overflow: hidden; }
 .run > summary {
   cursor: pointer; list-style: none; padding: 9px 13px; display: flex;
@@ -202,6 +215,19 @@ table.data th .thw {
 .mcon { font-weight: 600; }
 .mtot { border-top: 1px solid var(--hair); padding-top: 5px; margin-top: 2px; }
 .mtot .mname { font-weight: 600; color: var(--ink); }
+
+/* Every declared test case, one row per invocation of the binary. The
+   execution gate fails the whole run when any single case fails, so the
+   failing case has to be nameable or the zero cannot be read. */
+.cases { margin: 11px 0 13px; display: grid; gap: 3px; }
+.crow { display: grid; grid-template-columns: 34px 1fr 46px 52px 58px; gap: 9px; align-items: center; font-size: 11.5px; }
+.ccap { font-size: 10px; color: var(--ink-muted); text-transform: uppercase; letter-spacing: 0.06em; }
+.cidx { font-family: var(--font-mono); color: var(--ink-muted); }
+.cargs { font-family: var(--font-mono); color: var(--ink-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cargs.none { color: var(--ink-muted); font-style: italic; }
+.cnum { font-family: var(--font-mono); font-variant-numeric: tabular-nums; text-align: right; color: var(--ink-muted); }
+.cstat { justify-self: end; }
+.caseerr { margin: 1px 0 7px; max-height: 190px; }
 
 .abortbanner {
   display: flex; gap: 8px; align-items: flex-start; font-size: 12.5px;
@@ -530,16 +556,33 @@ table.data th .thw {
       "minmax(120px, 1.5fr) repeat(" + PROBLEMS.length + ", minmax(62px, 1fr))";
 
     document.getElementById("gridnote").textContent = measure === "ran"
-      ? "Share of submissions that executed. Click any cell for the runs behind it."
+      ? "Share of submissions that executed. Click any cell for every agent's runs on that problem, the clicked one first. The column header does the same with nobody first."
       : (m.label + (m.cat ? " score, averaged over runs that reached a judge. " :
                             ", averaged over every run including the zeros. ") +
-         "Click any cell for the runs behind it.");
+         "Click any cell for every agent's runs on that problem, the clicked one first. The column header does the same with nobody first.");
 
     host.appendChild(el("div"));
-    for (const p of PROBLEMS) host.appendChild(el("div", "g-h", p));
+    // The header selects the whole column, which is the panel's scope anyway.
+    // Clicking a cell pins one agent to the top of it; clicking the header
+    // asks for the problem with nobody pinned.
+    PROBLEMS.forEach((p, pi) => {
+      const h = el("button", "g-h" + (selection && selection.p === pi ? " on" : ""), p);
+      h.type = "button";
+      h.setAttribute("aria-label", p + ", all agents");
+      h.addEventListener("click", () => {
+        selection = { v: null, p: pi };
+        renderGrid();
+        renderDetail();
+      });
+      host.appendChild(h);
+    });
 
     for (const vi of vis) {
-      const name = el("div", "g-r", VARIANTS[vi].short);
+      // The row label carries the selection too. The cell outline alone says
+      // which problem, never which agent, and the agent is the harder of the
+      // two to read off these names.
+      const name = el("div", "g-r" + (selection && selection.v === vi ? " on" : ""),
+                      VARIANTS[vi].short);
       name.title = VARIANTS[vi].label;
       host.appendChild(name);
       for (let pi = 0; pi < PROBLEMS.length; pi++) {
@@ -564,7 +607,11 @@ table.data th .thw {
           m.label + " " + (v === null ? "no data" : (measure === "ran" ? pct(v) : fx(v, 1))) +
           ", " + n + " runs");
         b.addEventListener("click", () => {
-          selection = on ? null : { v: vi, p: pi };
+          // A repeat click holds the cell. It used to clear the selection,
+          // which sent the panel back to its default landing, and with three
+          // agent names differing in one character that reads as the page
+          // ignoring the click rather than as a reset.
+          selection = { v: vi, p: pi };
           renderGrid();
           renderDetail();
         });
@@ -593,8 +640,12 @@ table.data th .thw {
     const ctx = document.getElementById("detailctx");
     host.replaceChildren();
 
+    // The panel is scoped to the problem, not to the one cell that was
+    // clicked. Comparing agents is the reason the page exists, and the runs
+    // are the only place the evidence lives, so showing one agent at a time
+    // made the reader hold the other two in their head. The clicked agent
+    // leads the list; the rest follow in the page's one ordering.
     let target = selection;
-    if (target && !active.has(target.v)) target = null;
     if (!target) {
       // Land on something rather than an empty panel. The first visible cell
       // that has runs is arbitrary but predictable, which beats opening on a
@@ -606,17 +657,42 @@ table.data th .thw {
         }
       }
     }
+    ctx.replaceChildren();
     if (!target) {
-      ctx.textContent = "No runs in view.";
+      ctx.appendChild(el("span", null, "No runs in view."));
       host.appendChild(el("p", "empty", "Nothing to show under the current filters."));
       return;
     }
-    const rows = cellRows(target.v, target.p).sort((a, b) => a.r - b.r || a.j - b.j);
-    ctx.textContent = VARIANTS[target.v].label + "  ·  " + PROBLEMS[target.p] + "  ·  " +
-      rows.length + (rows.length === 1 ? " run" : " runs") +
-      (selection ? "  ·  click the cell again to clear" : "  ·  click any cell to change");
-    for (const r of rows) host.appendChild(runNode(r));
-    if (!rows.length) host.appendChild(el("p", "empty", "No runs for this cell."));
+    const pinned = target.v !== null && active.has(target.v) ? target.v : null;
+    const order = shown().filter((vi) => vi !== pinned);
+    if (pinned !== null) order.unshift(pinned);
+
+    const groups = [];
+    for (const vi of order) {
+      const rows = cellRows(vi, target.p).sort((a, b) => a.r - b.r || a.j - b.j);
+      if (rows.length) groups.push({ vi: vi, rows: rows });
+    }
+    const total = groups.reduce((a, g) => a + g.rows.length, 0);
+
+    ctx.appendChild(el("span", "who", PROBLEMS[target.p]));
+    ctx.appendChild(el("span", null, "  ·  " + groups.length +
+      (groups.length === 1 ? " agent" : " agents") + "  ·  " + total +
+      (total === 1 ? " run" : " runs") +
+      (selection ? "" : "  ·  click any cell to change")));
+
+    for (const g of groups) {
+      const head = el("div", "ghead" + (g.vi === pinned ? " on" : ""));
+      head.appendChild(el("span", "gname", VARIANTS[g.vi].label));
+      const scored = g.rows.filter((r) => r.gt > 0 && r.gp === r.gt);
+      head.appendChild(el("span", "gmeta",
+        g.rows.length + (g.rows.length === 1 ? " run" : " runs") + "  ·  mean " +
+        fx(mean(g.rows.map((r) => r.s)), 1) +
+        (scored.length === g.rows.length ? "" : "  ·  " +
+          (g.rows.length - scored.length) + " scored zero")));
+      host.appendChild(head);
+      for (const r of g.rows) host.appendChild(runNode(r));
+    }
+    if (!groups.length) host.appendChild(el("p", "empty", "No runs for this problem."));
   }
 
   // How this run's composite was assembled. The contributions sum to the total
@@ -665,6 +741,46 @@ table.data th .thw {
     return wrap;
   }
 
+  // Every declared test case, as the harness ran it. A problem declares its own
+  // cases and each runs with its own arguments and rank count, so one run of
+  // GradShafranov is six invocations of the binary. Any one of them failing
+  // fails the execution gate and zeroes the composite, which the reader can
+  // only follow if the failing case is named and its stderr is here.
+  function caseStrip(r) {
+    const cases = r.cases || [];
+    // Runs made before the harness ran every case carry one argument line and
+    // no cases. Showing that line unlabelled is honest; inventing a case 0
+    // around it would claim a record the run does not have.
+    if (!cases.length) return r.cli ? el("div", "cliline", r.cli) : null;
+
+    const failed = cases.filter((c) => !c.ok).length;
+    const wrap = el("div", "cases");
+    wrap.appendChild(el("div", "ccap", cases.length +
+      (cases.length === 1 ? " test case" : " test cases") +
+      (failed ? " · " + failed + " failed" : "")));
+
+    for (const c of cases) {
+      const row = el("div", "crow");
+      row.appendChild(el("span", "cidx", "#" + c.i));
+      row.appendChild(el("span", "cargs" + (c.a ? "" : " none"), c.a || "no arguments"));
+      row.appendChild(el("span", "cnum", "np " + c.n));
+      row.appendChild(el("span", "cnum", typeof c.t === "number" ? fx(c.t, 2) + "s" : "—"));
+      const pill = el("span", "cstat pill " + (c.ok ? "pass" : "fail"));
+      pill.appendChild(el("span", null, c.ok ? "✓" : "✕"));
+      pill.appendChild(el("span", null, c.ok ? "ran" : "failed"));
+      row.appendChild(pill);
+      wrap.appendChild(row);
+
+      if (c.ok || !c.e) continue;
+      wrap.appendChild(el("pre", "errbox caseerr", c.e));
+      if (c.elen > c.e.length) {
+        wrap.appendChild(el("p", "errnote", "Showing the first " + c.e.length.toLocaleString() +
+          " of " + c.elen.toLocaleString() + " characters. Full text in " + r.src + "."));
+      }
+    }
+    return wrap;
+  }
+
   function runNode(r) {
     const d = el("details", "run");
     const s = el("summary");
@@ -694,10 +810,24 @@ table.data th .thw {
         body.appendChild(el("p", "errnote", "Showing the first " + r.err.length.toLocaleString() +
           " of " + r.errlen.toLocaleString() + " characters. Full text in " + r.src + "."));
       }
+    } else if (r.gf) {
+      // The other zero. A failing test case no longer throws out of the
+      // harness, so the run is evaluated, a gate fails, and the composite is
+      // zeroed by rule with no stack dump to show. Saying so is the difference
+      // between a verdict the reader can check and an unexplained zero.
+      const banner = el("p", "abortbanner");
+      const icon = el("span", null, "◆");
+      icon.style.color = css("--status-warning");
+      banner.appendChild(icon);
+      banner.appendChild(el("span", null, r.gp + " of " + r.gt + " gates passed. A failed gate " +
+        "zeroes the composite by rule and the categories are never scored, so this zero is a " +
+        "verdict rather than a missing one. The cases and gate rows below say what failed."));
+      body.appendChild(banner);
     }
     const ms = metricStrip(r);
     if (ms) body.appendChild(ms);
-    if (r.cli) body.appendChild(el("div", "cliline", r.cli));
+    const cs = caseStrip(r);
+    if (cs) body.appendChild(cs);
     for (const f of r.code) body.appendChild(sourceNode(f));
     for (const e of r.ev) {
       const row = el("div", "evrow");

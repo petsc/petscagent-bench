@@ -54,6 +54,11 @@ ERROR_CHARS = 4000
 # and the cut is stated. A PETSc solution is normally 3-12k.
 SOURCE_CHARS = 60_000
 
+# Per-case stderr, carried only for the cases that failed. A case that ran is
+# diagnosed by nothing, and the passing cases' PETSc chatter would be most of
+# the payload.
+CASE_STDERR_CHARS = 1200
+
 # A contrast needs this many shared problems before the page will draw it. The
 # bootstrap resamples problems, so at one shared problem every draw is that same
 # problem and the interval collapses to zero width. Such a row renders as a
@@ -129,8 +134,22 @@ def build_payload(dirs: list[Path] | None) -> dict:
                 "tok": rec.total_tokens,
                 "src": rec.source_file,
                 "fc": rec.failure_class,
+                "gf": rec.gate_failed,
                 "err": rec.error[:ERROR_CHARS],
                 "errlen": len(rec.error),
+                "cases": [
+                    {
+                        "i": c.index,
+                        "a": c.args,
+                        "n": c.nsize,
+                        "ok": c.runs,
+                        "t": round(c.execution_time_sec, 3)
+                        if c.execution_time_sec is not None else None,
+                        "e": "" if c.runs else c.stderr[:CASE_STDERR_CHARS],
+                        "elen": 0 if c.runs else len(c.stderr),
+                    }
+                    for c in rec.cases
+                ],
                 "code": [
                     {"f": s.filename, "h": s.sha256[:12], "t": s.text}
                     for s in rec.sources

@@ -1,7 +1,8 @@
 # Dashboard work in progress
 
-Handoff note, rewritten 2026-10-01 after the page was cut down to three cards.
-Read this first when resuming.
+Handoff note, rewritten 2026-10-01 after the page was cut down to three cards
+and updated 2026-10-02 after the branch was rebased onto main. Read this first
+when resuming.
 
 ## What the user asked for
 
@@ -36,17 +37,57 @@ What replaced them.
 | Summary strip | Four numbers. Runs in view, share of submissions that executed, mean of scored runs, count reaching GOLD | the old KPI strip, cut from eight tiles to four |
 | Agents | One row per agent. Coverage, submissions, compiled, ran, scored, then one mean column per judge | the funnel and the judge matrix, as columns |
 | By problem | Agents by problems, one clickable cell each, under a measure segment of Score, Ran and the five metrics | the heatmap and the category matrix, behind one control |
-| Detail | Every run behind the clicked cell, with the weighted metric strip, evaluator rows, and the source panel | unchanged from the old drill-down |
+| Detail | Every visible agent's runs on the selected problem, grouped by agent, each with the weighted metric strip, evaluator rows, and the source panel | the old drill-down, widened from a cell to a column on 2026-10-02 |
 | All runs | The full per-record table, behind a toggle, hidden by default | unchanged |
 
 **The previous page is kept verbatim as `dashboard_template_full.html`**, 89362
-bytes. `analysis/` is untracked in git, so that file is the only copy. Do not
-delete it without asking.
+bytes. It is now tracked, committed in `44f6fb7` along with the rest of
+`analysis/`, so history is a second copy. Do not delete it without asking.
 
-**`build_dashboard.py` was not touched.** The payload still carries `contrasts`,
-`ci`, `variance`, `factors` and `factorLabels`; the page simply no longer reads
-them. That kept the cut to one file. Trimming the payload is optional cleanup,
-worth roughly 10 KB, and would mean rewriting the stats module's callers.
+**`build_dashboard.py` was not touched by the cut.** The payload still carries
+`contrasts`, `ci`, `variance`, `factors` and `factorLabels`; the page simply no
+longer reads them. That kept the cut to one file. Trimming the payload is
+optional cleanup, worth roughly 10 KB, and would mean rewriting the stats
+module's callers. The rebase pass below did touch the file, for the per-case
+payload only.
+
+## The rebase onto main, 2026-10-02
+
+The branch was rebased onto main, which brought in per-test-case execution
+(`154ed2b`) and the `--purple-url` launcher path (`86d4c94`). Neither broke the
+build. Both changed what the page was telling the truth about, and three things
+came out of it.
+
+**A run now has `cases`.** Every declared `test_cases` entry runs with its own
+`args` and `nsize`, and the result file records one entry per case. The loader
+parses them into `Case` and `Record.cases`, the payload carries them trimmed,
+and the detail panel renders a row strip in place of the old single argument
+line. Only the failing cases carry stderr, capped at `CASE_STDERR_CHARS`,
+because the passing ones are diagnosed by nothing and their PETSc chatter would
+be most of the payload. A result file written before `154ed2b` has no `cases`,
+loads with an empty list, and falls back to the argument line.
+
+**There are now two kinds of zero.** A failing case no longer throws out of the
+harness. The pipeline short-circuits on the failed gate, aggregation zeroes the
+composite, and the record carries no error string. `Record.aborted` used to
+reason that a zero with no error was impossible, which is why its docstring was
+rewritten and `Record.gate_failed` added beside it. The panel marks the second
+kind with its own banner, because a verdict of zero and a missing score look
+identical in a number and should not look identical on the page.
+
+**Provenance falls back to `reported_model`.** `launcher.py:111` fills
+`purple_model` in only for a purple the green agent starts itself, so every run
+against an already-running agent writes it empty. All three files currently in
+`output/` are such runs and were being dropped at load with "No provenanced
+result files found." They now load under the name the agent reported for itself,
+at scaffold level `UNRECORDED`, which costs them their one-factor contrasts and
+keeps the page from inventing a structure the file never recorded.
+`pdesim-<model>-c<N>` is a composite, and reading it as a single agent would be
+a claim nobody made.
+
+The three files in `output/` predate the rebase, carry no `cases`, and are
+there to test the visualization. The user will regenerate them against current
+main. The per-case path is covered by the demo set until then.
 
 ## Design decisions that survive
 
@@ -63,6 +104,24 @@ columns do not, because each judge's verdict is its own observation.
 **One ordering for the whole page.** `shown()` returns visible agents sorted by
 mean over the judges in view, best first, and the scoreboard rows, the grid rows
 and the detail panel's default all read it. They used to disagree.
+
+**Detail is scoped to the problem, not to the cell, 2026-10-02.** It used to
+show the runs behind one cell, so comparing agents meant clicking each in turn
+and remembering the last. It now lists every visible agent's runs on the
+selected problem, grouped under a header carrying the agent, its run count and
+its mean. The clicked agent leads and is underlined, the rest follow in the
+page's one ordering, and the column header selects the problem with nobody
+leading. Hiding an agent drops its group. On the demo set a column is six
+groups and thirty-six collapsed runs, which is the cost of the comparison being
+in one place.
+
+**The grid selection is sticky, 2026-10-02.** A repeat click on the selected
+cell used to clear it, and the detail panel fell back to its default landing on
+the first agent. The user read that as the page refusing to show the other two
+agents, which is fair, since the three names differ in one character and the
+heading rendered that character at the same weight as everything else. The
+repeat click now holds, the selected agent's row label goes bold alongside the
+cell outline, and the heading leads with the agent name at 13px bold.
 
 **Segmented buttons, never a `<select>`.** `domstub.js` has no `.value`, so a
 dropdown is a control the headless drivers cannot exercise.
@@ -81,14 +140,14 @@ categorical palette work is no longer load bearing.
 
 | File | State |
 | --- | --- |
-| `analysis/dashboard_template.html` | 849 lines. The three-card page. CSS plus markup plus one inline script. |
+| `analysis/dashboard_template.html` | The three-card page. CSS plus markup plus one inline script. `caseStrip()` and the gate-failure banner are the rebase additions. |
 | `analysis/dashboard_template_full.html` | The eleven-card page, verbatim. Reference only, never built. |
-| `analysis/load_results.py` | Unchanged. `SOURCE_DIRS` is the top level of `output/` only. |
-| `analysis/build_dashboard.py` | Unchanged. Serializes with `allow_nan=False` through `_nulls_for_nan`. |
-| `analysis/make_demo_runs.py` | Unchanged. Generates the six-variant synthetic set. |
+| `analysis/load_results.py` | `SOURCE_DIRS` is the top level of `output/` only. Carries `Case`, `Record.cases`, `Record.gate_failed`, and the `UNRECORDED` scaffold. |
+| `analysis/build_dashboard.py` | Serializes with `allow_nan=False` through `_nulls_for_nan`. Emits `cases` and `gf` per row. |
+| `analysis/make_demo_runs.py` | Generates the six-variant synthetic set. Evaluator names now match the real config, and failures split into compile failures and runtime case failures. |
 | `analysis/devtools/domstub.js` | Minimal DOM shim. No `<select>` support, by omission. |
 | `analysis/devtools/dash_run.js` | Static render check. Rewritten for the nine surviving ids. |
-| `analysis/devtools/dash_drive.js` | Drives every control. Rewritten, grid replaces heatmap and the measure segment replaces colorBy. |
+| `analysis/devtools/dash_drive.js` | Drives every control. Reads the judge segment's length rather than assuming two judges, because the real set has one. |
 | `analysis/devtools/dash_dump.js` | Prints a section's visible text. Id agnostic, needed no change. `node devtools/dash_dump.js summary scoreboard` |
 
 ## Section ids
@@ -110,58 +169,55 @@ to 109 when it came out. `output/paper_v1` has no provenance and was already
 excluded twice over.
 
 Selection is otherwise a glob plus one gate. A file is kept if it yields both a
-purple variant and a `judge_model`, and everything that passes is included.
-There is no dedup, so the same run saved under two filenames counts twice, and
-nothing reports what was skipped. Both are open.
+purple identity and a `judge_model`, and everything that passes is included.
+Identity is `purple_model` when the green agent started the purple and
+`reported_model` when it did not. There is no dedup, so the same run saved under
+two filenames counts twice, and nothing reports what was skipped. Both are open.
 
-**Open, and a data question rather than a page one. Two thin arms sit in the
-comparison.** The simplification removed the cards that amplified them. It did
-not remove them.
-
-- `output/ext-smoke-judged-by-gpt52-run1.json`, landed 2026-10-01 15:30, loads
-  as a fifth agent with 7 records, all scoring 0, six of seven failing to
-  compile. It has full problem coverage, so nothing marks it thin.
-- `single-pdesim-claudeopus481m-c3` has one record on one problem and **ranks
-  first** on the scoreboard at 54.2, because one lucky run beats any honest
-  average.
-
-The page flags both as far as a page can. The coverage column is dimmed when it
-is below 7 of 7, and the agent chip carries an amber `⚠ 1/7`. It still ranks
-them by score, because inventing a minimum-n rule in the renderer would drop
-data without saying so. The fix is upstream, either move the files out of the
-top level or add the `--min-runs N` flag already on the list. **Asked the user
-twice, no answer yet.**
+`output/` currently holds three files, one per `pdesim-claudeopus481m-c{1,2,3}`
+arm, each judged by `claudeopus46`, 21 records over 7 problems with one judge.
+The thin arms that earlier versions of this note flagged, `ext-smoke` and the
+one-record `c3`, are no longer in the top level. The page still flags thin
+coverage the same way, a dimmed coverage column and an amber `⚠ n/7` on the
+chip, and still ranks by score rather than inventing a minimum-n rule in the
+renderer. The `--min-runs N` flag remains the clean fix and remains unbuilt.
 
 ## Verification status
 
-Both sets fully clean, 2026-10-01 after the cut.
+Both sets fully clean, 2026-10-02 after the rebase pass.
 
 ```
 cd analysis && python build_dashboard.py
-# 116 problem-runs, 5 variants, 1 run with source, 750 KB
-node devtools/dash_run.js     # 1290 nodes in 16 ms, all 9 sections non-empty
-node devtools/dash_drive.js   # all states clean, 16 table cols / 116 rows,
-                              # 76 metric strips add up, source panel 101 lines
+# 21 problem-runs, 3 variants, 19 runs with source, 373 KB
+node devtools/dash_run.js     # 1199 nodes in 18 ms, all 9 sections non-empty
+node devtools/dash_drive.js   # all states clean, 16 table cols / 21 rows,
+                              # 30 metric strips add up, source panel 115 lines
 ```
 
 ```
 cd analysis && python make_demo_runs.py && python build_dashboard.py --demo
-# 252 problem-runs, 6 variants, 192 runs with source, 866 KB
+# 252 problem-runs, 6 variants, 199 runs with source, 927 KB
 node devtools/dash_drive.js   # all states clean, 16 table cols / 252 rows,
-                              # 267 metric strips add up, source panel 50 lines
+                              # 278 metric strips add up, source panel 50 lines
 ```
 
-The drive run exercises the judge filter in three states, all seven grid
-measures, every agent chip hidden one at a time down to the last and then
-restored, the table toggle, a grid cell selection, the source panel on open, and
-the copy button. No card is permitted to empty in any state. Two behaviours make
-that true rather than lucky. The last chip refuses to turn off, and the detail
-panel re-homes to the first visible cell with runs when its own agent is hidden.
+The drive run exercises the judge filter in every state the data offers, all
+seven grid measures, every agent chip hidden one at a time down to the last and
+then restored, the table toggle, a grid cell selection, the source panel on
+open, and the copy button. No card is permitted to empty in any state. Two
+behaviours make that true rather than lucky. The last chip refuses to turn off,
+and the detail panel re-homes to the first visible cell with runs when its own
+agent is hidden.
+
+The case strip and the gate-failure banner have no assertion of their own. The
+real set cannot carry one, since those files predate `cases`, and the demo set
+reaches both paths only through the detail panel the driver already opens.
+Adding a check is worth doing once the regenerated runs land.
 
 **Page contract, clean.** No doctype, html, head, or body tags. Verify with
 `grep -oiE '<(!doctype|html|head|body)[ >]'`, NOT with `/<head/i`, which gives a
-false positive on `<header>`. Title is inside the first 8 KB. Size 0.75 MB real
-and 0.87 MB demo against the 16 MB limit.
+false positive on `<header>`. Title is inside the first 8 KB. Size 0.37 MB real
+and 0.93 MB demo against the 16 MB limit.
 
 ## Repro commands
 
@@ -172,10 +228,10 @@ other.
 ```bash
 cd /scratch/hongzhang/petscagent_bench/analysis
 
-# six agents, source panels populated
+# six agents, two judges, per-case strips and both kinds of zero
 python make_demo_runs.py && python build_dashboard.py --demo && node devtools/dash_drive.js
 
-# five agents, one with a single run, one source panel
+# three agents, one judge, no cases recorded
 python build_dashboard.py && node devtools/dash_drive.js
 ```
 
@@ -183,7 +239,8 @@ python build_dashboard.py && node devtools/dash_drive.js
 
 - Dedup on `(variant, judge, run_index, problem)`.
 - A build-time report naming every file that was skipped and why.
-- A `--min-runs N` flag, which is also the clean fix for the two thin arms.
+- A `--min-runs N` flag, the clean fix for a thin arm ranking first.
+- A driver assertion on the case strip and the gate-failure banner.
 
 ## Out of scope
 
