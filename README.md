@@ -301,7 +301,7 @@ uv run main.py launch --purple-url http://localhost:9002
 Your agent names its own output file by self-reporting a `model` in its telemetry.
 Without one the run is filed as `unknown-...`.
 
-Set `A2A_READ_TIMEOUT=0` if the agent needs more than 3000s for the whole suite, otherwise the client discards the finished run.
+The Green Agent streams progress, emitting one event per problem, so the 3000s client read timeout applies to the gap between events rather than to the whole suite.
 
 ### Configuration
 
