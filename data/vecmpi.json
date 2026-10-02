@@ -17,7 +17,9 @@
         16.0,
         18.0,
         20.0
-      ]
+      ],
+      "comparison": "match",
+      "tolerance": 1.0e-3
     }
   ]
 }

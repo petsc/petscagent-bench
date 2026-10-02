@@ -5,7 +5,9 @@
   "test_cases": [
     {
       "args": "",
-      "expected_output": ""
+      "expected_output": [5.1910e-03],
+      "comparison": "match",
+      "tolerance": 2.0e-2
     }
   ]
 }

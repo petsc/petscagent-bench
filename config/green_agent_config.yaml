@@ -71,9 +71,9 @@ modularity:
   use_llm: true
 
 # Metric configurations
+# Fallback for test cases that do not declare their own tolerance.
 numerical_accuracy:
-  error_tolerance: 1.0e-3
-  error_threshold: 1.0e-3
+  tolerance: 1.0e-3
 
 execution_time:
   excellent_time_sec: 0.5

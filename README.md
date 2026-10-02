@@ -101,6 +101,37 @@ Each problem is evaluated across multiple dimensions (see `config/green_agent_co
 - PETSc best practices
 - Semantic correctness
 
+#### Numerical accuracy
+
+Each test case in `data/*.json` declares what its reference number means and
+how close is close enough:
+
+```json
+{
+  "args": "-ts_type beuler",
+  "expected_output": [1.0e-9],
+  "comparison": "upper_bound",
+  "tolerance": 0.0
+}
+```
+
+`comparison` is `match` (the default), where the reference is a target scored
+on relative L2 distance, or `upper_bound`, where it is a ceiling scored on
+relative overshoot alone so a result below the ceiling is free. Use
+`upper_bound` for quantities that are bounds rather than values, such as the
+maximum discrete divergence in NS2D. `tolerance` falls back to
+`numerical_accuracy.tolerance` in `config/green_agent_config.yaml`. A result
+inside the tolerance scores 1.0 and one outside decays exponentially.
+
+Convergence studies use ordinary `match` cases at coarse and fine resolutions.
+Their reference errors encode the expected order, so standard per-case scoring
+handles them without a separate convergence path. Problems with several test
+cases are run once per case, each with the arguments that case declares.
+
+Known limitation: an agent that prints `0.0` without solving anything
+satisfies an `upper_bound`. Use `match` when an implausibly small value should
+not receive credit, as in convergence-study cases.
+
 ## Output
 
 ### Files written to disk

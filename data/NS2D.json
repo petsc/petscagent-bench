@@ -5,7 +5,9 @@
   "test_cases": [
     {
       "args": "-ts_type beuler",
-      "expected_output": [2.91757e-11]
+      "expected_output": [1.0e-9],
+      "comparison": "upper_bound",
+      "tolerance": 0.0
     }
   ]
 }

@@ -7,38 +7,50 @@
       "args": "-ksp_rtol 1e-12",
       "expected_output": [
         9.007956e-06
-      ]
+      ],
+      "comparison": "match",
+      "tolerance": 5.0e-3
     },
     {
       "args": "-da_grid_x 129 -da_grid_y 129 -ksp_rtol 1e-12",
       "expected_output": [
         2.254066e-06
-      ]
+      ],
+      "comparison": "match",
+      "tolerance": 5.0e-3
     },
     {
       "nsize": "4",
       "args": "-da_grid_x 129 -da_grid_y 129 -ksp_rtol 1e-12",
       "expected_output": [
         2.254066e-06
-      ]
+      ],
+      "comparison": "match",
+      "tolerance": 5.0e-3
     },
     {
       "args": "-cf_A -0.05 -cf_c 0.01345054287305128,-0.32652064658764612,0.0036973913170412704,-0.023449138073450806,0.00023178758646249259,-0.00043609700228301881,-4.3069906609274579e-06,0,0,0,0,0 -cf_xmin 0.142 -cf_xmax 1.858 -cf_ymin -1.716 -cf_ymax 1.716 -ksp_rtol 1e-12",
       "expected_output": [
         4.476851e-05
-      ]
+      ],
+      "comparison": "match",
+      "tolerance": 5.0e-3
     },
     {
       "args": "-cf_A -0.155 -cf_c 0.10837664588627995,0.88960160205382266,-1.0385641313594354,-0.4398328131861074,0.78764165045565671,-0.73609241647527501,-0.030678503142252973,0,0,0,0,0 -cf_xmin 0.648 -cf_xmax 1.352 -cf_ymin -0.65824 -cf_ymax 0.65824 -ksp_rtol 1e-12",
       "expected_output": [
         2.001072e-05
-      ]
+      ],
+      "comparison": "match",
+      "tolerance": 5.0e-3
     },
     {
       "args": "-cf_c 0.066650467803637523,-0.19549796060803781,-0.051105541336425253,-0.045967106142823171,0.0055324133602574236,-0.0055311112278751311,-0.000148005558824326,0,0,0,0,0 -cf_ymin -0.5984 -cf_ymax 0.5984 -ksp_rtol 1e-12",
       "expected_output": [
         1.789499e-06
-      ]
+      ],
+      "comparison": "match",
+      "tolerance": 5.0e-3
     }
   ]
 }

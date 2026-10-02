@@ -8,7 +8,9 @@
       "expected_output": [
         1.0,
         1.0
-      ]
+      ],
+      "comparison": "match",
+      "tolerance": 1.0e-3
     }
   ]
 }

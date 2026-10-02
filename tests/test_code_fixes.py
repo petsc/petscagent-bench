@@ -109,8 +109,7 @@ class CodeFixTests(unittest.TestCase):
         for expected in (
             'model: "anthropic/claudeopus46"',
             'api_base_url: "https://apps.inside.anl.gov/argoapi"',
-            "error_tolerance: 1.0e-3",
-            "error_threshold: 1.0e-3",
+            "tolerance: 1.0e-3",
             "excellent_time_sec: 0.5",
             "good_time_sec: 1.0",
             "acceptable_time_sec: 2.0",
