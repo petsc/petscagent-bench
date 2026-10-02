@@ -38,7 +38,8 @@ class MemorySafetyGate(Evaluator):
         Args:
             code: The generated code (not used directly)
             problem: Problem specification (not used for memory check)
-            execution_result: Should contain 'valgrind_output' or similar
+            execution_result: Must contain a ``cases`` list whose entries
+                may provide ``valgrind_output`` and ``stderr``
         
         Returns:
             EvaluationResult with passed=True if no memory issues found
@@ -54,56 +55,63 @@ class MemorySafetyGate(Evaluator):
                 evaluation_method=self.evaluation_method,
                 execution_time_ms=(time.time() - start_time) * 1000
             )
-        
-        # Check if valgrind was run
-        valgrind_output = execution_result.get('valgrind_output')
-        stderr = execution_result.get('stderr', '')
-        
-        if valgrind_output is None:
-            # Valgrind not run - do basic checks on stderr
-            has_memory_issue = any([
-                'memory leak' in stderr.lower(),
-                'invalid read' in stderr.lower(),
-                'invalid write' in stderr.lower(),
-                'segmentation fault' in stderr.lower(),
-            ])
-            
+
+        cases = execution_result.get('cases') or []
+        if not cases:
+            # Nothing ran, so there is no memory behaviour to judge. A None
+            # verdict is neutral in aggregation rather than a free pass.
             return EvaluationResult(
                 evaluator_name=self.name,
                 evaluator_type=self.evaluator_type,
-                passed=not has_memory_issue,
-                confidence=0.7,  # Lower confidence without valgrind
-                feedback="Basic memory safety check (valgrind not available)" if not has_memory_issue 
-                        else "Potential memory safety issue detected",
-                metadata={
-                    'valgrind_available': False,
-                    'stderr_check': True,
-                },
+                passed=None,
+                feedback="No executed cases - memory safety check skipped",
+                metadata={'valgrind_available': False, 'test_cases': []},
                 evaluation_method=self.evaluation_method,
-                execution_time_ms=(time.time() - start_time) * 1000
+                execution_time_ms=(time.time() - start_time) * 1000,
             )
-        
-        # Parse valgrind output
-        memory_safe = self._parse_valgrind_output(valgrind_output)
-        
-        if memory_safe:
-            feedback = "No memory leaks or errors detected (valgrind)"
-        else:
-            feedback = "Memory safety issues detected (see metadata for details)"
-        
+
+        details = []
+        for case in cases:
+            output = case.get('valgrind_output')
+            stderr = case.get('stderr', '')
+            if output is None:
+                # Documented fallback when the server cannot instrument.
+                safe = not self._stderr_has_memory_issue(stderr)
+                method = 'stderr'
+            else:
+                safe = self._parse_valgrind_output(output)
+                method = 'valgrind'
+            details.append({
+                'index': case.get('index'),
+                'passed': safe,
+                'method': method,
+            })
+
+        memory_safe = all(case['passed'] for case in details)
+        used_valgrind = all(case['method'] == 'valgrind' for case in details)
         return EvaluationResult(
             evaluator_name=self.name,
             evaluator_type=self.evaluator_type,
             passed=memory_safe,
-            confidence=1.0,  # High confidence with valgrind
-            feedback=feedback,
+            confidence=1.0 if used_valgrind else 0.7,
+            feedback=(
+                "All test cases passed memory-safety checks"
+                if memory_safe else "Memory safety issues detected in one or more test cases"
+            ),
             metadata={
-                'valgrind_available': True,
-                'valgrind_output': valgrind_output[:500],  # Truncate
+                'valgrind_available': used_valgrind,
+                'test_cases': details,
             },
             evaluation_method=self.evaluation_method,
-            execution_time_ms=(time.time() - start_time) * 1000
+            execution_time_ms=(time.time() - start_time) * 1000,
         )
+
+    @staticmethod
+    def _stderr_has_memory_issue(stderr: str) -> bool:
+        stderr = stderr.lower()
+        return any(issue in stderr for issue in (
+            'memory leak', 'invalid read', 'invalid write', 'segmentation fault'
+        ))
     
     def _parse_valgrind_output(self, output: str) -> bool:
         """Parse valgrind output to determine if memory is safe.

@@ -37,7 +37,7 @@ from src.util.telemetry import (
 )
 from pathlib import Path
 
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 from typing import Any, Dict, List, Optional
 import dotenv
 
@@ -259,6 +259,20 @@ def read_from_json(path):
 
 
 @dataclass
+class TestCaseResult:
+    """Record of one executable invocation."""
+
+    index: int
+    args: str
+    nsize: int
+    runs: bool
+    stdout: str = ""
+    stderr: str = ""
+    execution_time_sec: Optional[float] = None
+    valgrind_output: Optional[str] = None
+
+
+@dataclass
 class BenchmarkResult:
     """Container for a single problem's benchmark results.
 
@@ -274,6 +288,8 @@ class BenchmarkResult:
         stdout: Program standard output
         stderr: Program standard error
         cli_args: Command-line arguments used for execution
+        cases: Canonical result records for every executable invocation. The
+            scalar execution fields are retained as a compatibility view.
 
     Evaluation Results:
         composite_score: Overall score 0-100 (weighted average of categories)
@@ -289,9 +305,11 @@ class BenchmarkResult:
     stdout: Optional[str] = None
     stderr: Optional[str] = None
     cli_args: Optional[str] = None
+    cases: List[TestCaseResult] = field(default_factory=list)
     requested_nsize: Optional[int] = None
     actual_nsize: Optional[int] = None
     execution_time_sec: Optional[float] = None  # Code execution time only
+    total_execution_time_sec: Optional[float] = None
     valgrind_output: Optional[str] = None
     generated_sources: Optional[List[Dict[str, str]]] = None
     # Token cost of the purple agent's code-generation call (metadata only,
@@ -465,12 +483,14 @@ class Agent:
             br.compiles = False
             br.runs = False
 
-    async def _run_executable(self, br: BenchmarkResult, pname: str, nsize: int, cli_args: str) -> None:
+    async def _run_executable(self, br: BenchmarkResult, pname: str, nsize: int, cli_args: str,
+                              valgrind: bool = True) -> None:
         """Run the compiled executable.
         Args:
             br: BenchmarkResult to update with execution results
             pname: Problem/executable name
             cli_args: Command line arguments for execution
+            valgrind: Whether this run may also be instrumented
         """
         try:
             t0 = time.time()
@@ -482,12 +502,13 @@ class Agent:
             br.stderr = ""
             br.runs = True
 
-            if self.config.get("memory_safety", {}).get("use_valgrind", False):
+            if valgrind and self.config.get("memory_safety", {}).get("use_valgrind", False):
                 try:
                     await self.mcp_client.run_executable(
                         executable=pname, nsize=nsize, args=cli_args, valgrind=True
                     )
-                    br.valgrind_output = self.mcp_client.response.stderr
+                    response = getattr(self.mcp_client, "response", None)
+                    br.valgrind_output = getattr(response, "stderr", None)
                 except petscmcp.MCPDynamicClientReturnCode as e:
                     # Valgrind reports are useful even when the instrumented
                     # process exits nonzero; the memory gate parses the text.
@@ -507,6 +528,67 @@ class Agent:
             br.compile_stderr = 'Error condition in accessing MCP server'
             br.compiles = False
             br.runs = False
+
+    async def _run_test_cases(
+        self,
+        br: BenchmarkResult,
+        pname: str,
+        problem: Dict[str, Any],
+        nsize: int,
+        cli_args: str,
+    ) -> None:
+        """Run every case and derive legacy scalar fields from case 0."""
+        test_cases = problem.get("test_cases") or [{}]
+        results: List[TestCaseResult] = []
+        for idx, test_case in enumerate(test_cases):
+            case_args = test_case.get("args", cli_args)
+            case_nsize = int(test_case.get("nsize", nsize))
+            print(f"@@@ Green agent: test case {idx} (nsize {case_nsize}) {case_args}")
+            case_br = BenchmarkResult(
+                problem_name=br.problem_name,
+                problem_id=br.problem_id,
+                runs=False,
+                compiles=br.compiles,
+            )
+            try:
+                await self._run_executable(
+                    case_br, pname, case_nsize, case_args, valgrind=True
+                )
+            except petscmcp.MCPDynamicClientReturnCode:
+                # A failed case is still a result. Continue so the execution
+                # gate can report all failures instead of losing prior cases.
+                pass
+            results.append(TestCaseResult(
+                index=idx,
+                args=case_args,
+                nsize=case_nsize,
+                runs=case_br.runs,
+                stdout=case_br.stdout or "",
+                stderr=case_br.stderr or "",
+                execution_time_sec=case_br.execution_time_sec,
+                valgrind_output=case_br.valgrind_output,
+            ))
+
+        br.cases = results
+        first = results[0]
+        br.stdout = first.stdout
+        br.stderr = first.stderr
+        br.cli_args = first.args
+        br.actual_nsize = first.nsize
+        br.runs = all(case.runs for case in results)
+        # The scalar field keeps its old meaning, the runtime of the first
+        # invocation. Cases of different sizes have no meaningful mean.
+        br.execution_time_sec = first.execution_time_sec
+        runtimes = [
+            case.execution_time_sec for case in results
+            if case.execution_time_sec is not None
+        ]
+        br.total_execution_time_sec = sum(runtimes) if runtimes else None
+        reports = [
+            f"test case {case.index}:\n{case.valgrind_output}"
+            for case in results if case.valgrind_output is not None
+        ]
+        br.valgrind_output = "\n".join(reports) if reports else None
 
     async def run(self, message: Message, updater: TaskUpdater) -> None:
         """Green agent implementation - manages assessment and evaluation.
@@ -658,7 +740,7 @@ class Agent:
                 await self._compile_code(br, pname, dep_list)
                 # Run the executable (only if compilation succeeded)
                 if br.compiles:
-                    await self._run_executable(br, pname, nsize, cli_args)
+                    await self._run_test_cases(br, pname, data, nsize, cli_args)
 
                 # Run evaluation system
                 print(f"@@@ Green agent: Evaluating generated code...")
@@ -817,21 +899,14 @@ class Agent:
                 for item in generated_sources
             )
 
-            # Prepare execution result for evaluators
+            # Prepare execution result for evaluators. Execution is described
+            # by its cases. The scalar fields stay on BenchmarkResult for the
+            # stored output, and are deliberately not duplicated here.
             execution_result = {
                 'compiles': benchmark_result.compiles,
-                'runs': benchmark_result.runs,
                 'stdout': benchmark_result.stdout or '',
-                'stderr': benchmark_result.stderr or '',
-                'execution_time_sec': (
-                    benchmark_result.execution_time_sec
-                    if benchmark_result.execution_time_sec is not None
-                    else 0.0
-                ),
+                'cases': [asdict(case) for case in benchmark_result.cases],
                 'memory_mb': None,  # TODO: Add memory tracking if available
-                'valgrind_output': benchmark_result.valgrind_output,
-                'requested_nsize': benchmark_result.requested_nsize,
-                'actual_nsize': benchmark_result.actual_nsize,
             }
             # Run evaluation pipeline
             eval_results = await self.evaluation_pipeline.evaluate(

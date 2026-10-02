@@ -35,7 +35,8 @@ class ExecutionGate(Evaluator):
         Args:
             code: The generated code (not used directly)
             problem: Problem specification (not used for execution check)
-            execution_result: Must contain 'runs' and 'stderr' keys
+            execution_result: Must contain a ``cases`` list whose entries
+                provide ``runs`` and ``stderr``
         
         Returns:
             EvaluationResult with passed=True if executed successfully
@@ -52,9 +53,16 @@ class ExecutionGate(Evaluator):
                 execution_time_ms=(time.time() - start_time) * 1000
             )
         
-        runs = execution_result.get('runs', False)
-        stderr = execution_result.get('stderr', '')
-        
+        # A run is described by its cases. No cases means nothing was run,
+        # which the compilation gate has already reported.
+        cases = execution_result.get('cases') or []
+        failed_cases = [case for case in cases if not case.get('runs', False)]
+        runs = bool(cases) and not failed_cases
+        stderr = "\n".join(
+            f"case {case.get('index')}: {case.get('stderr', '')}"
+            for case in failed_cases
+        )
+
         # Check for common runtime issues
         has_segfault = 'segmentation fault' in stderr.lower() or 'sigsegv' in stderr.lower()
         has_assertion = 'assertion' in stderr.lower()
@@ -62,6 +70,8 @@ class ExecutionGate(Evaluator):
         
         if runs:
             feedback = "Code executed successfully"
+        elif not cases:
+            feedback = "Executable was never run"
         else:
             error_indicators = []
             if has_segfault:
@@ -88,6 +98,7 @@ class ExecutionGate(Evaluator):
                 'has_segfault': has_segfault,
                 'has_assertion': has_assertion,
                 'has_abort': has_abort,
+                'failed_case_indices': [case.get('index') for case in failed_cases],
             },
             evaluation_method=self.evaluation_method,
             execution_time_ms=(time.time() - start_time) * 1000

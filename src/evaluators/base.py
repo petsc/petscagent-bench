@@ -175,12 +175,10 @@ class Evaluator(ABC):
                 Expected keys:
                 - compiles: bool
                 - compile_errors: str
-                - runs: bool
-                - runtime_errors: str
                 - stdout: str
-                - stderr: str
-                - exit_code: int
-                - execution_time_sec: float
+                - cases: list of per-invocation dictionaries containing
+                  index, runs, stdout, stderr, execution_time_sec, and
+                  valgrind_output
                 - memory_mb: float
         
         Returns:

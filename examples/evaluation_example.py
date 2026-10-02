@@ -59,12 +59,15 @@ int main(int argc, char **argv) {
     execution_result = {
         'compiles': True,
         'compile_errors': '',
-        'runs': True,
-        'runtime_errors': '',
-        'exit_code': 0,
-        'stdout': '0.1 0.2 0.3 0.4',
-        'stderr': '',
-        'execution_time_sec': 0.3,
+        'stdout': '0.1\n0.2\n0.3\n0.4',
+        'cases': [{
+            'index': 0,
+            'runs': True,
+            'stdout': '0.1\n0.2\n0.3\n0.4',
+            'stderr': '',
+            'execution_time_sec': 0.3,
+            'valgrind_output': None,
+        }],
         'memory_mb': 50.0,
     }
     
