@@ -39,10 +39,8 @@ class GreenAgentExecutor(AgentExecutor):
         task = new_task_from_user_message(context.message)
         await event_queue.enqueue_event(task)
         context_id = task.context_id
-        use_cache = bool(
-            self.config.get("evaluation", {}).get("use_cached_submissions", False)
-        )
-        agent = Agent(config=self.config, purple_agent_url=purple_agent_url, mcp_server_url=mcp_server_url, green_id=green_id, purple_id=purple_id, purple_model=purple_model, use_cache=use_cache)
+        replay_path = tags.get("replay") or None
+        agent = Agent(config=self.config, purple_agent_url=purple_agent_url, mcp_server_url=mcp_server_url, green_id=green_id, purple_id=purple_id, purple_model=purple_model, replay_path=replay_path)
         # for debugging
         # max_num_prob = 1
         # agent = Agent(purple_agent_url=purple_agent_url, mcp_server_url=mcp_server_url, max_num_prob=max_num_prob)

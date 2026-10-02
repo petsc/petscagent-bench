@@ -249,7 +249,7 @@ class CodeFixTests(unittest.TestCase):
         )
         cached = BenchmarkResult(
             "cached", "p2", True, True,
-            purple_response_from_cache=True,
+            purple_response_replayed=True,
         )
 
         summary = _purple_efficiency_summary([live, cached])
@@ -261,7 +261,7 @@ class CodeFixTests(unittest.TestCase):
             summary["benchmark_measured"]["median_time_to_first_response_sec"], 0.5
         )
         self.assertEqual(summary["benchmark_measured"]["response_event_count"], 3)
-        self.assertEqual(summary["benchmark_measured"]["cached_cases"], 1)
+        self.assertEqual(summary["benchmark_measured"]["replayed_cases"], 1)
         self.assertEqual(summary["agent_declared"]["model_calls"]["total"], 4)
         self.assertEqual(summary["agent_declared"]["cost_usd"]["reported_cases"], 1)
         self.assertIsNone(summary["agent_declared"]["tool_calls"]["total"])
@@ -286,7 +286,7 @@ class CodeFixTests(unittest.TestCase):
         )
         cached = BenchmarkResult(
             "cached", "p3", True, True,
-            purple_response_from_cache=True,
+            purple_response_replayed=True,
             evaluation_summary={"all_gates_passed": True},
         )
 
@@ -323,7 +323,7 @@ class CodeFixTests(unittest.TestCase):
         # results under the label it replaced.
         cached = BenchmarkResult(
             "cached", "p1", True, True,
-            purple_response_from_cache=True,
+            purple_response_replayed=True,
             purple_telemetry={
                 "schema_version": "petscagent.telemetry.v1",
                 "model": "pdesim-gpt5-c1",
@@ -348,7 +348,7 @@ class CodeFixTests(unittest.TestCase):
         # would report generation work this run never performed.
         cached = BenchmarkResult(
             "cached", "p1", True, True,
-            purple_response_from_cache=True,
+            purple_response_replayed=True,
             purple_telemetry={
                 "schema_version": "petscagent.telemetry.v1",
                 "model_calls": 7,
@@ -361,7 +361,7 @@ class CodeFixTests(unittest.TestCase):
         self.assertEqual(summary["telemetry_reported_cases"], 0)
         self.assertIsNone(summary["agent_declared"]["model_calls"]["total"])
         self.assertIsNone(summary["benchmark_measured"]["median_wall_time_sec"])
-        self.assertEqual(summary["benchmark_measured"]["cached_cases"], 1)
+        self.assertEqual(summary["benchmark_measured"]["replayed_cases"], 1)
         self.assertEqual(summary["live_cases"], 0)
 
     def test_request_and_response_bytes_are_measured_identically(self):
@@ -441,21 +441,42 @@ class CodeFixTests(unittest.TestCase):
 
         self.assertEqual(callbacks, [])
 
-    def test_a2a_v1_response_cache_round_trip(self):
-        import tempfile
-        from a2a.types.a2a_pb2 import StreamResponse
+    def test_replay_rebuilds_a_recorded_submission(self):
         from src.green_agent.agent import Agent
-        from src.util.a2a_v1 import new_agent_text_message
+        from src.util.a2a_v1 import get_text_parts
 
         agent = Agent.__new__(Agent)
-        agent.purple_model = "test/model"
-        with tempfile.TemporaryDirectory() as cache_dir:
-            agent.cache_dir = Path(cache_dir)
-            response = StreamResponse(message=new_agent_text_message("cached"))
-            agent._save_cached_response("problem", response)
-            loaded = agent._load_cached_response("problem")
-            self.assertEqual(loaded, response)
-            self.assertEqual(agent._get_cache_path("problem").suffix, ".pb")
+        agent.replay_index = {
+            "problem": {
+                "problem_name": "problem",
+                "requested_nsize": 2,
+                # An empty cli_args is a valid submission, so replay must
+                # accept it rather than treat it as a missing field.
+                "cli_args": "",
+                "generated_sources": [
+                    {"original_name": "main.c", "source": "int main(void){return 0;}"}
+                ],
+            }
+        }
+        response = agent._replay_response("problem")
+        parts = response.message.parts
+        self.assertEqual(len(parts), 2)
+        self.assertIn("nsize: 2", "".join(get_text_parts(parts)))
+
+    def test_replay_rejects_a_record_it_cannot_rebuild(self):
+        from src.green_agent.agent import Agent
+
+        agent = Agent.__new__(Agent)
+        agent.replay_index = {
+            "no_sources": {"requested_nsize": 1, "cli_args": "", "generated_sources": []},
+            "no_nsize": {
+                "cli_args": "",
+                "generated_sources": [{"original_name": "a.c", "source": "x"}],
+            },
+        }
+        for name in ("missing", "no_sources", "no_nsize"):
+            with self.assertRaises(ValueError):
+                agent._replay_response(name)
 
     def test_a2a_payload_measurement_never_fails_a_solution(self):
         from src.green_agent.agent import _a2a_payload_bytes

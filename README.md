@@ -201,9 +201,10 @@ the cost field is omitted rather than estimated.
 
 The run summary reports these under `purple_efficiency`, split into
 `benchmark_measured` and `agent_declared`. Both halves cover only the cases
-actually sent to the agent during the run. A cached response replays an earlier
-run's telemetry, so cached cases are counted in `cached_cases` and excluded from
-every other figure, while the per-problem record keeps its telemetry.
+actually sent to the agent during the run. A replayed response carries an
+earlier run's telemetry, so replayed cases are counted in `replayed_cases` and
+excluded from every other figure, while the per-problem record keeps its
+telemetry.
 
 Each live problem also receives a separate `efficiency_score`; it does not
 change `composite_score` or the GOLD/SILVER/BRONZE tier. The budgets are fixed
@@ -249,8 +250,7 @@ Codes are assigned to tiers based on composite scores:
 │   └── util/                       # A2A helpers + LLM client
 ├── main.py                         # CLI entry point (green/purple/launch)
 ├── pyproject.toml                  # Python project configuration
-├── output/                         # Generated reports and results
-└── purple_agent_cache/             # Cached purple-agent responses (optional)
+└── output/                         # Generated reports and results
 ```
 
 ## Installation
@@ -428,13 +428,22 @@ class MyCustomEvaluator(Evaluator):
         )
 ```
 
-### Caching
+### Replaying a recorded run
 
-The Green Agent can cache Purple Agent responses per problem to speed up
-development iteration. A2A 1.x `StreamResponse` messages are serialized using
-their protobuf wire format and stored as `.pb` files in
-`purple_agent_cache/`. Cache keys include the Purple model and problem name.
-Legacy `.pkl` caches from the A2A 0.3 implementation are not reused.
+`uv run main.py launch --replay output/<run>.json` rescores the submissions a
+previous run recorded instead of generating new ones. The Purple Agent is not
+started and is never contacted. Each problem's `generated_sources` are rebuilt
+under their original filenames, so the same compile and run path applies as on
+the run that produced them.
+
+This is what makes a judge comparison valid. Two judges scoring the same
+replayed submissions differ only by the judge. `run_judge_swap.py` uses it that
+way, generating once with the baseline judge and replaying that output file for
+every other judge, then asserting the gates came out identical.
+
+Replayed problems are marked `purple_response_replayed` in the results, and
+they are excluded from efficiency aggregates and from the self-reported model
+detection, because their telemetry describes the earlier run.
 
 ## Troubleshooting
 

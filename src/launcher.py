@@ -63,7 +63,7 @@ def run_purple_agent(agent_llm, api_base_url=None):
     # asyncio.run(start_purple_agent(agent_llm="openai/google-claude-45-opus")) # test AskSage
 
 
-async def launch_evaluation(purple_url=None):
+async def launch_evaluation(purple_url=None, replay=None):
     """Main launcher function - initiates and coordinates the evaluation process.
     
     This function orchestrates the complete benchmark workflow:
@@ -105,17 +105,23 @@ async def launch_evaluation(purple_url=None):
     green_id = "019bb856-c8bf-7390-8c4f-bced52276932" # AgentBeats ID
     purple_id = ""
 
-    external_purple = purple_url is not None
+    replaying = replay is not None
+    external_purple = purple_url is not None and not replaying
     purple_url = purple_url or "http://localhost:9002"
     # Empty for an external agent, which names itself by self-reporting a model.
     purple_model = ""
+    if replaying:
+        # Name the rescored run for the model that generated the submissions,
+        # not for whatever purple happens to be configured now.
+        recorded = json.loads(open(replay).read())
+        purple_model = recorded.get("reported_model") or recorded.get("purple_model", "")
 
     green_cfg = load_green_agent_config()
     green_llm_cfg = green_cfg.get('evaluation', {}).get('llm', {})
     green_model = green_llm_cfg.get('model', 'openai/gpt-4o-mini')
     green_api_base_url = green_llm_cfg.get('api_base_url')
 
-    if not external_purple:
+    if not external_purple and not replaying:
         purple_cfg = load_purple_agent_config()
         purple_llm_cfg = purple_cfg.get('llm')
         purple_model = purple_llm_cfg.get('model', 'openai/gpt-4o-mini')
@@ -135,7 +141,9 @@ async def launch_evaluation(purple_url=None):
         print("Green agent is ready.")
 
         # Step 2: Start Purple Agent (code generator being tested)
-        if external_purple:
+        if replaying:
+            print(f"Replaying recorded submissions from {replay}; purple not started.")
+        elif external_purple:
             print(f"Using external purple agent at {purple_url}...")
             assert await wait_agent_ready(purple_url), "external purple agent not ready in time"
             print("External purple agent is ready.")
@@ -162,6 +170,11 @@ async def launch_evaluation(purple_url=None):
 
         # Step 4: Send evaluation task to Green Agent
         print("Sending task description to green agent...")
+        replay_block = f"""Instead of calling the purple agent, replay the submissions recorded in
+<replay>
+{replay}
+</replay>
+""" if replaying else ""
         task_text = f"""
 Your task is to instantiate petscagent-bench to test the agent located at:
 <purple_agent_url>
@@ -183,7 +196,7 @@ Purple agent's LLM model is
 <purple_model>
 {purple_model}
 </purple_model>
-    """
+{replay_block}    """
         print("Task description:")
         print(task_text)
         print("Sending...")

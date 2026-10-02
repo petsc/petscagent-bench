@@ -26,7 +26,8 @@ import statistics
 from a2a.server.tasks import TaskUpdater
 from src.util.a2a_v1 import (
     Message, TaskState, StreamResponse, get_data, get_text_parts, get_file_parts,
-    new_agent_text_message, new_text_part, protobuf_size,
+    new_agent_parts_message, new_agent_text_message, new_data_part, new_raw_part,
+    new_text_part, protobuf_size,
 )
 from src.util.a2a_comm import send_message
 from src.util.telemetry import (
@@ -123,11 +124,12 @@ def _purple_efficiency_summary(
 ) -> Dict[str, Any]:
     """Aggregate measured and optional agent-declared Purple efficiency.
 
-    Cached cases are excluded from both halves. A cached response replays the
-    telemetry of an earlier run, so folding it in would report work that this
-    run never performed. Per-problem records keep their telemetry regardless.
+    Replayed cases are excluded from both halves. A replayed response carries
+    the telemetry of an earlier run, so folding it in would report work that
+    this run never performed. Per-problem records keep their telemetry
+    regardless.
     """
-    live = [r for r in results if not r.purple_response_from_cache]
+    live = [r for r in results if not r.purple_response_replayed]
     times = [r.purple_wall_time_sec for r in live if r.purple_wall_time_sec is not None]
     first_response_times = [
         r.purple_time_to_first_response_sec
@@ -156,7 +158,7 @@ def _purple_efficiency_summary(
             ),
             "response_event_count": sum(r.purple_response_event_count for r in live),
             "average_efficiency_score": sum(scores) / len(scores) if scores else None,
-            "cached_cases": sum(bool(r.purple_response_from_cache) for r in results),
+            "replayed_cases": sum(bool(r.purple_response_replayed) for r in results),
         },
         "agent_declared": declared,
         "score_budgets": {
@@ -175,7 +177,7 @@ def _calculate_efficiency_score(
     result: "BenchmarkResult", efficiency_config: Dict[str, Any]
 ) -> Optional[float]:
     """Score Purple resource efficiency independently of solution quality."""
-    if result.purple_response_from_cache:
+    if result.purple_response_replayed:
         return None
 
     evaluation = result.evaluation_summary or {}
@@ -200,16 +202,15 @@ def _calculate_efficiency_score(
 def _reported_model(results):
     """The model a Purple Agent self-reported for this run, or None.
 
-    Only live results are considered. A cached response replays the telemetry
-    of an earlier run, so the model string it carries names that run rather
-    than this one. This is the same reason cached results are excluded from
-    _purple_efficiency_summary and _calculate_efficiency_score. The cache key
-    is built from the configured purple_model tag, not from the self-reported
-    name, so without this filter a reconfigured agent whose problems all hit
-    the cache would be labelled with the configuration it replaced.
+    Only live results are considered. A replayed response carries the
+    telemetry of an earlier run, so the model string it holds names that run
+    rather than this one. This is the same reason replayed results are
+    excluded from _purple_efficiency_summary and _calculate_efficiency_score.
+    A rescore names its run from the replay file instead, which the launcher
+    reads before the task is sent.
     """
     for result in results:
-        if result.purple_response_from_cache or not result.purple_telemetry:
+        if result.purple_response_replayed or not result.purple_telemetry:
             continue
         model = result.purple_telemetry.get(PURPLE_TELEMETRY_MODEL_FIELD)
         if model:
@@ -327,7 +328,7 @@ class BenchmarkResult:
     purple_request_bytes: int = 0
     purple_response_bytes: int = 0
     purple_response_event_count: int = 0
-    purple_response_from_cache: bool = False
+    purple_response_replayed: bool = False
     purple_telemetry: Optional[Dict[str, Any]] = None
     efficiency_score: Optional[float] = None
     # Compilation fields
@@ -347,7 +348,7 @@ class Agent:
 
     The agent distributes test tasks to participant agents, collects their responses, and reports the results.
     """
-    def __init__(self, config: Dict[str, Any], purple_agent_url, mcp_server_url, max_num_prob=None, use_cache=False, green_id=None, purple_id=None, purple_model=None):
+    def __init__(self, config: Dict[str, Any], purple_agent_url, mcp_server_url, max_num_prob=None, green_id=None, purple_id=None, purple_model=None, replay_path=None):
         self.config = config
         self.llm_config = config.get("evaluation", {}).get("llm", {})
         self.model = self.llm_config.get("model")
@@ -356,58 +357,73 @@ class Agent:
         self.mcp_client = PetscCompileRunMCPClient(mcp_server_url)
         self.max_num_prob = max_num_prob
         self.metrics = {}
-        self.use_cache = use_cache
         self.green_id = green_id
         self.purple_id = purple_id
         self.purple_model = purple_model
-        # Create cache directory
-        self.cache_dir = Path("./purple_agent_cache")
-        self.cache_dir.mkdir(exist_ok=True)
+        # Submissions recorded by an earlier run, keyed by problem name. When
+        # set, the Purple Agent is never called: a rescore then varies only
+        # the judge, so a score difference is attributable to it.
+        self.replay_index = None
+        if replay_path:
+            record = json.loads(Path(replay_path).read_text())
+            self.replay_index = {
+                r["problem_name"]: r for r in record.get("results", [])
+            }
+            print(
+                f"@@@ Green agent: ✅ Replaying {len(self.replay_index)} recorded "
+                f"submissions from {replay_path}"
+            )
 
         # Initialize evaluation system with config
         self.evaluation_pipeline = EvaluationPipeline(config, self.model, self.api_base_url)
         self.metrics_aggregator = MetricsAggregator(config)
         print(f"@@@ Green agent: ✅ Evaluation system initialized with {self.evaluation_pipeline.get_evaluator_count()['total']} evaluators")
 
-    def _get_cache_path(self, problem_name: str) -> Path:
-        """Get the cache file path for a given problem.
+    def _replay_response(self, problem_name: str) -> Any:
+        """Rebuild the Purple Agent response recorded for a problem.
 
-        Sanitizes the problem name to create a valid filename.
+        The recorded sources are replayed under their original filenames, so
+        the same normalization and the same compile and run path apply as on
+        the run that produced them.
 
-        Args:
-            problem_name: Original problem name (may contain special chars)
-
-        Returns:
-            Path object for the cache file
+        Raises:
+            ValueError: If the replay file has no usable submission.
         """
-        # Sanitize problem name for filename (replace non-alphanumeric with _)
-        safe_name = re.sub(r'[^\w\-_]', '_', problem_name)
-        # Key on the model under test as well: rescoring one fixed set of
-        # submissions under a different judge must reuse that model's cache,
-        # and different models must not overwrite each other.
-        return self.cache_dir / f"{_slug(self.purple_model)}-{safe_name}.pb"
-
-    def _load_cached_response(self, problem_name: str) -> Optional[Any]:
-        """Load cached purple agent response if it exists."""
-        cache_path = self._get_cache_path(problem_name)
-        if cache_path.exists():
-            try:
-                cached_data = StreamResponse.FromString(cache_path.read_bytes())
-                print(f"@@@ Green agent: ✅ Loaded cached response for {problem_name}")
-                return cached_data
-            except Exception as e:
-                print(f"@@@ Green agent: ❌ Failed to load cache for {problem_name}: {e}")
-                return None
-        return None
-
-    def _save_cached_response(self, problem_name: str, response: Any) -> None:
-        """Save purple agent response to cache."""
-        cache_path = self._get_cache_path(problem_name)
-        try:
-            cache_path.write_bytes(response.SerializeToString())
-            print(f"@@@ Green agent: 💾 Cached response for {problem_name}")
-        except Exception as e:
-            print(f"@@@ Green agent: ❌ Failed to save cache for {problem_name}: {e}")
+        record = self.replay_index.get(problem_name)
+        if record is None:
+            raise ValueError(f"Replay file has no record for {problem_name}")
+        sources = record.get("generated_sources")
+        nsize = record.get("requested_nsize")
+        cli_args = record.get("cli_args")
+        if not sources:
+            raise ValueError(f"Replay record for {problem_name} has no sources")
+        # An empty cli_args is a valid submission, so only an absent one is an
+        # error. Every test case supplies its own args, which means the value
+        # replayed here is a fallback that has to parse rather than a value the
+        # executions depend on.
+        if nsize is None or cli_args is None:
+            raise ValueError(
+                f"Replay record for {problem_name} has no nsize or cli_args"
+            )
+        parts = [
+            new_text_part(
+                f"Code generation successful ✅\nnsize: {nsize}\ncli_args: {cli_args}\n"
+            )
+        ]
+        # Carry the original telemetry so the record states what generated the
+        # code. It stays out of this run's live aggregates because a replayed
+        # result is flagged as not freshly generated.
+        telemetry = record.get("purple_telemetry")
+        if telemetry:
+            parts.append(new_data_part(telemetry))
+        for source in sources:
+            parts.append(new_raw_part(
+                source["source"].encode("utf-8"),
+                filename=source["original_name"], media_type="text/plain",
+            ))
+        return StreamResponse(
+            message=new_agent_parts_message(parts, context_id=problem_name)
+        )
 
     async def _create_files_on_server(self, pname: str, file_list: List[Any], generated_sources: List[Dict[str, str]]) -> str:
         """Upload generated files to MCP server.
@@ -636,11 +652,11 @@ class Agent:
             generated_sources = []
 
             try:
-                # Try to load from cache first
+                # Replay a recorded submission when one was supplied
                 purple_agent_response = None
-                if self.use_cache:
-                    purple_agent_response = self._load_cached_response(pname)
-                # If no cache, call the purple agent
+                if self.replay_index is not None:
+                    purple_agent_response = self._replay_response(pname)
+                # Otherwise ask the purple agent to generate one
                 if purple_agent_response is None:
                     print(
                         f"@@@ Green agent: Sending message to purple agent... -->\n{pdesc}"
@@ -662,12 +678,8 @@ class Agent:
                         on_metrics=record_boundary_metrics,
                     )
                 else:
-                    br.purple_response_from_cache = True
-                    print(f"@@@ Green agent: Using cached response for {pname}")
-
-                # Cache the response
-                if self.use_cache:
-                    self._save_cached_response(pname, purple_agent_response)
+                    br.purple_response_replayed = True
+                    print(f"@@@ Green agent: Using replayed response for {pname}")
 
                 if not isinstance(purple_agent_response, StreamResponse):
                     raise ValueError(f"Expected StreamResponse, got {type(purple_agent_response).__name__}")
@@ -786,7 +798,7 @@ class Agent:
         times = [
             r.purple_wall_time_sec
             for r in results
-            if not r.purple_response_from_cache and r.purple_wall_time_sec is not None
+            if not r.purple_response_replayed and r.purple_wall_time_sec is not None
         ]
         summary["avg_purple_wall_time_sec"] = (
             sum(times) / len(times) if times else None
@@ -798,7 +810,7 @@ class Agent:
 
         # Token cost of code generation across the suite (metadata only).
         # prompt=input, completion=output, cached=prompt tokens served from cache.
-        live_results = [r for r in results if not r.purple_response_from_cache]
+        live_results = [r for r in results if not r.purple_response_replayed]
         summary["total_prompt_tokens"] = sum(r.prompt_tokens or 0 for r in live_results)
         summary["total_completion_tokens"] = sum(r.completion_tokens or 0 for r in live_results)
         summary["total_tokens"] = sum(r.total_tokens or 0 for r in live_results)
@@ -820,10 +832,16 @@ class Agent:
         model_slug = _name_slug(effective_model)
         judge_slug = _name_slug(self.model)
         prefix = f"{model_slug}-judged-by-{judge_slug}"
+        # Count both artifacts a run leaves behind. The source tree is created
+        # with exist_ok=False, so numbering that looked only at the JSON would
+        # reuse an index whose sources survived and fail at the end of the run.
         used = [
             int(m.group(1))
-            for p in output_dir.glob(f"{prefix}-run*.json")
-            if (m := re.search(r"-run(\d+)\.json$", p.name))
+            for p in [
+                *output_dir.glob(f"{prefix}-run*.json"),
+                *(output_dir / "sources").glob(f"{prefix}-run*"),
+            ]
+            if (m := re.search(r"-run(\d+)(?:\.json)?$", p.name))
         ]
         run_index = max(used, default=0) + 1
         filename = f"{prefix}-run{run_index}.json"

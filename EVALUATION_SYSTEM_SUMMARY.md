@@ -432,42 +432,30 @@ This report is emitted as a **task artifact** (not written to `output/` by defau
 
 ## Purple Agent Caching System
 
-The Green Agent includes a **caching system** to avoid redundant Purple Agent calls:
+The Green Agent can **replay a previous run** instead of calling the Purple
+Agent, which is how a judge is swapped without regenerating any code:
 
 ```python
-# In src/green_agent/agent.py
-# Caching is controlled by the `use_cache` flag.
-self.use_cache = use_cache
-self.cache_dir = Path("./purple_agent_cache")
-self.cache_dir.mkdir(exist_ok=True)
+# In src/green_agent/agent.py, driven by `main.py launch --replay <run.json>`
+self.replay_index = {r["problem_name"]: r for r in record["results"]}
 
-def _get_cache_path(self, problem_name: str) -> Path:
-    """Get the cache file path for a given problem."""
-    safe_name = re.sub(r'[^\w\-_]', '_', problem_name)
-    return self.cache_dir / f"{_slug(self.purple_model)}-{safe_name}.pb"
-
-def _load_cached_response(self, problem_name: str):
-    """Load cached purple agent response if it exists."""
-    cache_path = self._get_cache_path(problem_name)
-    if cache_path.exists():
-        return StreamResponse.FromString(cache_path.read_bytes())
-    return None
-
-def _save_cached_response(self, problem_name: str, response):
-    """Save purple agent response to cache."""
-    cache_path = self._get_cache_path(problem_name)
-    cache_path.write_bytes(response.SerializeToString())
+def _replay_response(self, problem_name: str):
+    """Rebuild the Purple Agent response recorded for a problem."""
+    record = self.replay_index[problem_name]
+    # Sources go back under their original filenames, so the same
+    # normalization and the same compile and run path apply.
 ```
 
 **Benefits:**
 - 🚀 Faster re-evaluation during development
-- 💰 No redundant Purple Agent calls (cost savings)
-- 🔄 Consistent results for testing evaluation changes
-- 📁 Stored in `./purple_agent_cache/` as A2A 1.x protobuf `.pb` files
+- 💰 The Purple Agent is not started and not contacted
+- 🔄 Two judges score byte-identical submissions, so a score difference is
+  attributable to the judge alone
 
-The model name is part of the cache key so submissions from different Purple
-models cannot overwrite one another. Legacy A2A 0.3 pickle caches are not
-loaded by the A2A 1.x implementation.
+The replay source is an explicit run file rather than a key, so there is no way
+to pick up a stale submission generated under a prompt or config that has since
+changed. Replayed problems are flagged `purple_response_replayed` and left out
+of efficiency aggregates, because their telemetry describes the earlier run.
 
 ## Purple Agent Efficiency
 
@@ -681,11 +669,12 @@ output/
 - `evaluation_detailed_report.json`
 - `benchmark_result_<problem_name>.json`
 
-**Cached responses**:
+**Generated sources**:
 
 ```
-purple_agent_cache/
-└── *.pb
+output/sources/<run>/
+├── <problem>/*.c
+└── manifest.json
 ```
 
 ## Status
@@ -694,4 +683,4 @@ purple_agent_cache/
 - ✅ Integrated into the Green Agent benchmarking pipeline
 - ✅ Configurable via `config/green_agent_config.yaml`
 - ✅ Emits summary results to disk (`output/<purple_model>-judged-by-<green_model>-run<N>.json`) and additional reports as task artifacts
-- ✅ Supports caching of Purple Agent responses (`purple_agent_cache/`)
+- ✅ Supports replaying a recorded run to rescore fixed submissions (`--replay`)

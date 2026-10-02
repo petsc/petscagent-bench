@@ -57,6 +57,9 @@ def launch(
     purple_url: str = typer.Option(
         None, help="Evaluate an already-running agent at this URL instead of "
                    "starting the built-in purple."),
+    replay: str = typer.Option(
+        None, help="Rescore the submissions recorded in a previous run's "
+                   "output JSON instead of generating new ones."),
 ):
     """Launch the complete evaluation workflow.
     
@@ -74,7 +77,7 @@ def launch(
     - PETSc must be installed and PETSC_DIR/PETSC_ARCH set in .env
     - API keys for LLM providers must be configured in .env
     """
-    asyncio.run(launch_evaluation(purple_url=purple_url))
+    asyncio.run(launch_evaluation(purple_url=purple_url, replay=replay))
 
 
 if __name__ == "__main__":
