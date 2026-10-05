@@ -669,13 +669,19 @@ output/
 - `evaluation_detailed_report.json`
 - `benchmark_result_<problem_name>.json`
 
-**Generated sources**:
+**Per-run tree**:
 
 ```
-output/sources/<run>/
+output/runs/<run>/
 ├── <problem>/*.c
+├── <problem>/result.json
 └── manifest.json
 ```
+
+`result.json` is that problem's entry from the aggregate `results` array,
+written out on its own so a single problem can be read without parsing the
+whole run. Runs recorded before this tree was renamed are under
+`output/sources/<run>/` and hold sources only.
 
 ## Status
 

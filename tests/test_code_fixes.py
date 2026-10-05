@@ -124,7 +124,7 @@ class CodeFixTests(unittest.TestCase):
         self.assertIn("executable=pname, nsize=nsize, args=cli_args", text)
         self.assertIn('"sha256": hashlib.sha256', text)
         self.assertIn('"source": source', text)
-        self.assertIn('output_dir / "sources" / local_path.stem', text)
+        self.assertIn('output_dir / "runs" / f"{prefix}-run{run_index}"', text)
         self.assertIn("code=code", text)
 
     def test_rank_forwarding_and_valgrind_behavior(self):

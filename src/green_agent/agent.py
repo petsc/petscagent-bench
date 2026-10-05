@@ -410,12 +410,12 @@ class Agent:
         self.purple_agent_url = purple_agent_url
         self.mcp_client = PetscCompileRunMCPClient(mcp_server_url)
         self.max_num_prob = max_num_prob
+        # Comma-separated terms narrowing the problem set, None for all of it.
+        self.problems = problems
         self.metrics = {}
         self.green_id = green_id
         self.purple_id = purple_id
         self.purple_model = purple_model
-        # Comma-separated terms narrowing the problem set, None for all of it.
-        self.problems = problems
         # Submissions recorded by an earlier run, keyed by problem name. When
         # set, the Purple Agent is never called: a rescore then varies only
         # the judge, so a score difference is attributable to it.
@@ -894,20 +894,37 @@ class Agent:
         model_slug = _name_slug(effective_model)
         judge_slug = _name_slug(self.model)
         prefix = f"{model_slug}-judged-by-{judge_slug}"
-        # Count both artifacts a run leaves behind. The source tree is created
-        # with exist_ok=False, so numbering that looked only at the JSON would
-        # reuse an index whose sources survived and fail at the end of the run.
-        used = [
-            int(m.group(1))
-            for p in [
-                *output_dir.glob(f"{prefix}-run*.json"),
-                *(output_dir / "sources").glob(f"{prefix}-run*"),
+        # Take the next free index by creating its directory, which is atomic
+        # and so settles a race between two tasks finishing at once. The loser
+        # sees FileExistsError and takes the next index rather than losing a
+        # whole run's results to the winner's aggregate.
+        while True:
+            # Count every artifact a run leaves behind, or an index whose JSON
+            # was deleted but whose tree survived would be reused forever.
+            # "sources" is the pre-rename name, still present in output/.
+            used = [
+                int(m.group(1))
+                for p in [
+                    *output_dir.glob(f"{prefix}-run*.json"),
+                    *(output_dir / "runs").glob(f"{prefix}-run*"),
+                    *(output_dir / "sources").glob(f"{prefix}-run*"),
+                ]
+                if (m := re.search(r"-run(\d+)(?:\.json)?$", p.name))
             ]
-            if (m := re.search(r"-run(\d+)(?:\.json)?$", p.name))
-        ]
-        run_index = max(used, default=0) + 1
-        filename = f"{prefix}-run{run_index}.json"
-        local_path = output_dir / filename
+            run_index = max(used, default=0) + 1
+            run_dir = output_dir / "runs" / f"{prefix}-run{run_index}"
+            try:
+                run_dir.mkdir(parents=True, exist_ok=False)
+                break
+            except FileExistsError:
+                # The rescan now counts this directory, so the index rises and
+                # the loop cannot spin.
+                continue
+
+        local_path = output_dir / f"{prefix}-run{run_index}.json"
+        # Built once so the aggregate and the per-problem files below hold the
+        # same data. They are indented differently, being at different depths.
+        records = [asdict(r) for r in results]
         json_data = {
             "agent": self.purple_id,
             # purple_model is the tag the run was launched with, so the record
@@ -922,29 +939,30 @@ class Agent:
             # that lost problems.
             "problem_filter": self.problems,
             "summary": summary,
-            "results": [asdict(r) for r in results],
+            "results": records,
         }
         local_path.write_text(json.dumps(json_data, indent=2))
-        source_dir = output_dir / "sources" / local_path.stem
-        source_dir.mkdir(parents=True, exist_ok=False)
         source_manifest = []
-        for result in results:
-            problem_dir = source_dir / _slug(result.problem_name)
+        for result, record in zip(results, records):
+            problem_dir = run_dir / _slug(result.problem_name)
             problem_dir.mkdir(exist_ok=True)
+            (problem_dir / "result.json").write_text(
+                json.dumps(record, indent=2), encoding="utf-8"
+            )
             for source_record in result.generated_sources or []:
                 source_path = problem_dir / source_record["server_name"]
                 source_path.write_text(source_record["source"], encoding="utf-8")
                 source_manifest.append({
                     "problem_name": result.problem_name,
-                    "filename": str(source_path.relative_to(source_dir)),
+                    "filename": str(source_path.relative_to(run_dir)),
                     "sha256": source_record["sha256"],
                 })
-        (source_dir / "manifest.json").write_text(
+        (run_dir / "manifest.json").write_text(
             json.dumps(source_manifest, indent=2), encoding="utf-8"
         )
         print(f"@@@ Green agent: Saved results to {local_path}")
         await updater.add_artifact(
-            name=filename,
+            name=local_path.name,
             parts=[new_text_part(json.dumps(json_data, indent=2))],
             metadata=summary,
         )
