@@ -478,6 +478,49 @@ class CodeFixTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 agent._replay_response(name)
 
+    def test_select_problems_matches_by_substring_and_glob(self):
+        from src.green_agent.agent import select_problems
+
+        data = [
+            {"problem_name": "Robertson_ODE"},
+            {"problem_name": "NS2D_FV_Implicit"},
+            {"problem_name": "DarcyFlow2D_Steady"},
+        ]
+        def names(spec):
+            return [d["problem_name"] for d in select_problems(data, spec)]
+
+        # A bare term is a substring, so the full name need not be typed.
+        self.assertEqual(names("darcy"), ["DarcyFlow2D_Steady"])
+        self.assertEqual(names("ROBERTSON"), ["Robertson_ODE"])
+        # A wildcard makes the term a whole-name glob.
+        self.assertEqual(names("ns2d*"), ["NS2D_FV_Implicit"])
+        self.assertEqual(names("*implicit"), ["NS2D_FV_Implicit"])
+        # Data order, not the order the terms were given.
+        self.assertEqual(
+            names("darcy,robertson"), ["Robertson_ODE", "DarcyFlow2D_Steady"]
+        )
+        # Two terms hitting one problem still yield it once.
+        self.assertEqual(names("darcy,flow2d"), ["DarcyFlow2D_Steady"])
+        self.assertEqual(len(select_problems(data, None)), 3)
+        self.assertEqual(len(select_problems(data, "")), 3)
+        # Separators with no term is a typo, not a request for everything.
+        with self.assertRaises(ValueError):
+            select_problems(data, " , ")
+
+    def test_select_problems_rejects_a_term_that_matches_nothing(self):
+        from src.green_agent.agent import select_problems
+
+        data = [{"problem_name": "Robertson_ODE"}, {"problem_name": "Advection_PDE"}]
+        # A typo must stop the run rather than quietly shrink it, so this
+        # raises even though the other term is good.
+        with self.assertRaises(ValueError) as caught:
+            select_problems(data, "robertson,darcey")
+        message = str(caught.exception)
+        self.assertIn("darcey", message)
+        self.assertNotIn("robertson,", message)
+        # The message names the alternatives.
+        self.assertIn("Advection_PDE", message)
+
     def test_a2a_payload_measurement_never_fails_a_solution(self):
         from src.green_agent.agent import _a2a_payload_bytes
 

@@ -63,7 +63,7 @@ def run_purple_agent(agent_llm, api_base_url=None):
     # asyncio.run(start_purple_agent(agent_llm="openai/google-claude-45-opus")) # test AskSage
 
 
-async def launch_evaluation(purple_url=None, replay=None):
+async def launch_evaluation(purple_url=None, replay=None, problems=None):
     """Main launcher function - initiates and coordinates the evaluation process.
     
     This function orchestrates the complete benchmark workflow:
@@ -175,6 +175,11 @@ async def launch_evaluation(purple_url=None, replay=None):
 {replay}
 </replay>
 """ if replaying else ""
+        problems_block = f"""Evaluate only the problems matching
+<problems>
+{problems}
+</problems>
+""" if problems else ""
         task_text = f"""
 Your task is to instantiate petscagent-bench to test the agent located at:
 <purple_agent_url>
@@ -196,7 +201,7 @@ Purple agent's LLM model is
 <purple_model>
 {purple_model}
 </purple_model>
-{replay_block}    """
+{replay_block}{problems_block}    """
         print("Task description:")
         print(task_text)
         print("Sending...")

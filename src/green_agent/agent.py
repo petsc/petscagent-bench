@@ -9,7 +9,7 @@ The Green Agent is responsible for orchestrating the complete benchmark workflow
 6. Aggregating results and generating reports
 
 Key features:
-- Caching of Purple Agent responses for faster development iteration
+- Replay of a recorded run's submissions for faster development iteration
 - Comprehensive evaluation using gates, metrics, and quality assessments
 - Detailed per-problem and aggregate reporting
 - Support for both JSON and YAML configuration
@@ -19,6 +19,7 @@ import os
 import json
 import time
 import re
+import fnmatch
 import hashlib
 import math
 import numbers
@@ -250,13 +251,66 @@ def read_from_json(path):
     if not os.path.isdir(path):
         raise RuntimeError(f"Directory {path} does not exist")
 
+    # Sorted because iterdir() returns filesystem order, which made the
+    # problem order, and so any count-based limit, differ between machines.
     data = []
-    for file in Path(path).iterdir():
+    for file in sorted(Path(path).iterdir()):
         if not os.path.isfile(file):
             continue
         with open(file, "r", encoding="utf-8") as fd:
-            data.append(json.loads(fd.read().strip()))
+            problem = json.loads(fd.read().strip())
+            problem["source_file"] = file.name  # for the problems listing
+            data.append(problem)
     return data
+
+
+def select_problems(test_data, spec):
+    """Narrow `test_data` to the comma-separated terms in `spec`.
+
+    Terms match problem_name ignoring case. A term holding a wildcard is a
+    glob matched against the whole name; any other term matches a substring.
+
+    Args:
+        test_data: Problem dicts from read_from_json.
+        spec: Comma-separated terms, or None to keep everything.
+
+    Returns:
+        The matching problems in test_data order, each one once.
+
+    Raises:
+        ValueError: If `spec` holds no term, or a term matches no problem.
+            Either would otherwise silently change which problems run.
+    """
+    if not spec:
+        return test_data
+
+    terms = [t.strip().lower() for t in spec.split(",") if t.strip()]
+    if not terms:
+        # Separators only. Returning everything here would turn a typo into a
+        # full run of the benchmark.
+        raise ValueError(f"no problem names in: {spec!r}")
+
+    def matches(term, name):
+        if any(c in term for c in "*?["):
+            return fnmatch.fnmatch(name, term)
+        return term in name
+
+    unmatched = [
+        term
+        for term in terms
+        if not any(matches(term, d["problem_name"].lower()) for d in test_data)
+    ]
+    if unmatched:
+        available = ", ".join(sorted(d["problem_name"] for d in test_data))
+        raise ValueError(
+            f"no problem matches: {', '.join(unmatched)}\navailable: {available}"
+        )
+
+    return [
+        d
+        for d in test_data
+        if any(matches(term, d["problem_name"].lower()) for term in terms)
+    ]
 
 
 @dataclass
@@ -348,7 +402,7 @@ class Agent:
 
     The agent distributes test tasks to participant agents, collects their responses, and reports the results.
     """
-    def __init__(self, config: Dict[str, Any], purple_agent_url, mcp_server_url, max_num_prob=None, green_id=None, purple_id=None, purple_model=None, replay_path=None):
+    def __init__(self, config: Dict[str, Any], purple_agent_url, mcp_server_url, max_num_prob=None, green_id=None, purple_id=None, purple_model=None, replay_path=None, problems=None):
         self.config = config
         self.llm_config = config.get("evaluation", {}).get("llm", {})
         self.model = self.llm_config.get("model")
@@ -360,6 +414,8 @@ class Agent:
         self.green_id = green_id
         self.purple_id = purple_id
         self.purple_model = purple_model
+        # Comma-separated terms narrowing the problem set, None for all of it.
+        self.problems = problems
         # Submissions recorded by an earlier run, keyed by problem name. When
         # set, the Purple Agent is never called: a rescore then varies only
         # the judge, so a score difference is attributable to it.
@@ -629,18 +685,24 @@ class Agent:
 
         # input_text = get_message_text(message)
         data_file_path = Path("./data")
-        test_data = read_from_json(data_file_path)
+        test_data = select_problems(read_from_json(data_file_path), self.problems)
         limit = self.max_num_prob or len(test_data)
+        selected = test_data[:limit]
+        if self.problems:
+            print(
+                f"@@@ Green agent: Running {len(selected)} problem(s) matching "
+                f"'{self.problems}': {', '.join(d['problem_name'] for d in selected)}"
+            )
         mcp_initialized = False
 
-        for idx, data in enumerate(test_data[:limit], start=1):
+        for idx, data in enumerate(selected, start=1):
             pname = data["problem_name"]
             pid = data["problem_id"]
             pdesc = data["problem_description"]
 
             await updater.update_status(
                 TaskState.TASK_STATE_WORKING,
-                new_agent_text_message(f"[{idx}/{len(test_data)}] Running {pname}..."),
+                new_agent_text_message(f"[{idx}/{len(selected)}] Running {pname}..."),
             )
 
             br = BenchmarkResult(
@@ -856,6 +918,9 @@ class Agent:
             "reported_model": reported_model,
             "judge_model": self.model,
             "run_index": run_index,
+            # Null for a full run, so a short run is not mistaken for one
+            # that lost problems.
+            "problem_filter": self.problems,
             "summary": summary,
             "results": [asdict(r) for r in results],
         }
