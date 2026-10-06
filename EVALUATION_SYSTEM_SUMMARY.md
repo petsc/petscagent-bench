@@ -674,14 +674,13 @@ output/
 ```
 output/runs/<run>/
 ├── <problem>/*.c
-├── <problem>/result.json
 └── manifest.json
 ```
 
-`result.json` is that problem's entry from the aggregate `results` array,
-written out on its own so a single problem can be read without parsing the
-whole run. Runs recorded before this tree was renamed are under
-`output/sources/<run>/` and hold sources only.
+The tree holds the submitted code and nothing else, so it is a property of
+the purple run that produced it. Scores live in the aggregate JSON beside it,
+which means rescoring the same submissions never touches this side. Runs
+recorded before this tree was renamed are under `output/sources/<run>/`.
 
 ## Status
 

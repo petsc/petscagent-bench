@@ -1156,8 +1156,6 @@ class Agent:
             (path, json_data) for the caller to report and attach.
         """
         local_path = output_dir / f"{prefix}-run{run_index}.json"
-        # Built once so the aggregate and the per-problem files below hold the
-        # same data. They are indented differently, being at different depths.
         records = [_record_to_dict(r) for r in results]
         json_data = {
             "agent": self.purple_id,
@@ -1183,13 +1181,13 @@ class Agent:
             "results": records,
         }
         local_path.write_text(json.dumps(json_data, indent=2))
+        # The tree holds what the purple produced, and nothing else. Scores
+        # live only in the aggregate above, so rescoring the same submissions
+        # leaves this side untouched.
         source_manifest = []
-        for result, record in zip(results, records):
+        for result in results:
             problem_dir = run_dir / _slug(result.problem_name)
             problem_dir.mkdir(exist_ok=True)
-            (problem_dir / "result.json").write_text(
-                json.dumps(record, indent=2), encoding="utf-8"
-            )
             for source_record in result.generated_sources or []:
                 source_path = problem_dir / source_record["server_name"]
                 source_path.write_text(source_record["source"], encoding="utf-8")
