@@ -479,6 +479,13 @@ def load_records(
         judge = doc.get("judge_model")
         if not variant or not judge:
             continue  # no provenance, cannot be placed on the judge axis
+        # The document names the judge of the pass that last wrote it. A
+        # narrowed rescore carries the problems it did not evaluate through
+        # from the file it replays, so some records in the file were scored by
+        # an earlier judge and say so in scored_by. Taking the judge per record
+        # keeps those on their own axis instead of crediting them to the new
+        # one. Records written before scored_by existed fall back to the
+        # document, which for them is right.
         run_index = doc.get("run_index", 0)
         harness = doc.get("harness") or {}
         env = doc.get("env") or {}
@@ -490,7 +497,7 @@ def load_records(
             records.append(
                 Record(
                     variant=variant,
-                    judge=judge,
+                    judge=str(r.get("scored_by") or judge),
                     run_index=run_index,
                     problem=problem,
                     problem_id=str(r.get("problem_id", "")),

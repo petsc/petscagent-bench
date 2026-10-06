@@ -1006,5 +1006,53 @@ class ReportSurvivesAMixedFileTest(unittest.TestCase):
         self.assertNotIn("Performance:", text)
 
 
+class TheDashboardReadsTheJudgePerRecordTest(unittest.TestCase):
+    """A rescored file names one judge but may hold records from two.
+
+    A narrowed rescore carries the problems it did not evaluate through from
+    the file it replays, and the top-level judge_model names only the pass that
+    last wrote the file. Reading it for every record would move an earlier
+    judge's scores onto the new judge's axis, which is the one comparison the
+    judge filter exists to make.
+    """
+
+    def _load(self, doc):
+        import json
+        import sys
+        import tempfile
+        from pathlib import Path
+
+        sys.path.insert(0, str(Path(__file__).parents[1] / "analysis"))
+        from load_results import load_records
+
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "a-run1.json").write_text(json.dumps(doc))
+            return load_records([Path(tmp)], with_sources=False)
+
+    def _doc(self, *results):
+        return {
+            "purple_model": "somepurple",
+            "judge_model": "new-judge",
+            "run_index": 1,
+            "results": list(results),
+        }
+
+    def test_a_carried_record_keeps_the_judge_that_scored_it(self):
+        records = self._load(self._doc(
+            {"problem_name": "darcy", "scored_by": "new-judge"},
+            {"problem_name": "heat", "scored_by": "old-judge"},
+        ))
+        self.assertEqual(
+            {r.problem: r.judge for r in records},
+            {"darcy": "new-judge", "heat": "old-judge"},
+        )
+
+    def test_a_record_without_the_stamp_falls_back_to_the_document(self):
+        # Every file written before scored_by existed. The document's judge is
+        # the only one there is, and for those records it is correct.
+        records = self._load(self._doc({"problem_name": "darcy"}))
+        self.assertEqual([r.judge for r in records], ["new-judge"])
+
+
 if __name__ == "__main__":
     unittest.main()
