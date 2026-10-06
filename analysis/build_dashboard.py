@@ -30,6 +30,7 @@ from pathlib import Path
 
 from load_results import (
     CATEGORY_WEIGHTS,
+    EVALUATOR_CATEGORY,
     FACTOR_LABELS,
     FACTORS,
     FAILURE_CLASSES,
@@ -269,6 +270,7 @@ def build_payload(dirs: list[Path] | None) -> dict:
         "problems": problems,
         "categories": list(CATEGORY_WEIGHTS),
         "weights": CATEGORY_WEIGHTS,
+        "evalCategory": EVALUATOR_CATEGORY,
         "tiers": list(TIER_ORDER),
         "failure_classes": [c for c in FAILURE_CLASSES
                             if any(r["fc"] == c for r in rows)],

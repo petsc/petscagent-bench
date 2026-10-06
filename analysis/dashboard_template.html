@@ -239,6 +239,15 @@ table.data th .thw {
 .errnote { font-size: 11.5px; color: var(--ink-muted); margin-bottom: 10px; }
 .evrow { border-top: 1px solid var(--hair); padding: 8px 0; }
 .evrow:first-of-type { border-top: 0; }
+.evgroup { margin-top: 12px; }
+.evghead {
+  display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline;
+  padding: 5px 0 3px; border-bottom: 1px solid var(--hair);
+}
+.evgname { font-size: 12.5px; font-weight: 600; }
+.evgval { font-family: var(--font-mono); font-size: 12px; }
+.evgnote { font-size: 11.5px; color: var(--ink-muted); }
+.evgroup .evrow:first-of-type { border-top: 0; }
 .evhead { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; }
 .evname { font-family: var(--font-mono); font-size: 12px; font-weight: 500; }
 .evscore { font-family: var(--font-mono); font-size: 11.5px; color: var(--ink-muted); }
@@ -340,10 +349,15 @@ table.data th .thw {
   const VARIANTS = DATA.variants, JUDGES = DATA.judges, PROBLEMS = DATA.problems;
   const CATS = DATA.categories;
   const SEQ = ["--seq-100", "--seq-200", "--seq-300", "--seq-400", "--seq-500", "--seq-600", "--seq-700"];
+  // "PETSc usage" rather than "PETSc practice": the category averages three
+  // evaluators, one of which is named petsc_best_practices and prints a few
+  // rows below it. Two near-identical names beside two different numbers read
+  // as a contradiction.
   const CAT_LABELS = {
     correctness: "Correctness", performance: "Performance", code_quality: "Code quality",
-    algorithm: "Algorithm", petsc: "PETSc practice"
+    algorithm: "Algorithm", petsc: "PETSc usage"
   };
+  const EVAL_CAT = DATA.evalCategory || {};
   // What a grid cell can show. `score` and the five metrics are 0-100 means;
   // `ran` is a fraction of submissions, so it carries its own scale and format.
   const MEASURES = [{ key: "score", label: "Score" }, { key: "ran", label: "Ran" }]
@@ -704,6 +718,35 @@ table.data th .thw {
   // it prints, so the row is a check the reader can run. The total sums the
   // displayed figures rather than the unrounded products, because a row meant
   // to be checked must add up on screen.
+  // Evaluator rows arranged the way the score was built, because a flat list
+  // invites reading an individual evaluator as the category above it. The
+  // category number is a confidence-weighted mean of the rows beneath it, so
+  // `petsc_best_practices 0.76` sitting under `PETSc usage 83.1` is arithmetic
+  // rather than a contradiction. Gates come last: they can zero the composite
+  // but are never averaged into a category.
+  function evaluatorGroups(r) {
+    const out = [], placed = new Set();
+    for (const c of CATS) {
+      const rows = r.ev.filter((e) => EVAL_CAT[e.n] === c);
+      if (!rows.length) continue;
+      rows.forEach((e) => placed.add(e));
+      const scored = rows.filter((e) => typeof e.s === "number");
+      const weighted = scored.some((e) => typeof e.c === "number" && e.c !== 1);
+      const note = scored.length === 1
+        ? "the category is this evaluator"
+        : (weighted ? "confidence-weighted mean of " : "mean of ") + scored.length + " evaluators";
+      out.push({ label: CAT_LABELS[c] || c, value: r.cat[c], note: note, rows: rows });
+    }
+    const rest = r.ev.filter((e) => !placed.has(e));
+    if (rest.length) {
+      out.push({
+        label: "Gates and unweighted checks", value: null,
+        note: "not averaged into any category", rows: rest,
+      });
+    }
+    return out;
+  }
+
   function metricStrip(r) {
     const cats = CATS.filter((c) => typeof r.cat[c] === "number");
     if (!cats.length) return null;
@@ -834,25 +877,34 @@ table.data th .thw {
     const cs = caseStrip(r);
     if (cs) body.appendChild(cs);
     for (const f of r.code) body.appendChild(sourceNode(f));
-    for (const e of r.ev) {
-      const row = el("div", "evrow");
-      const head = el("div", "evhead");
-      head.appendChild(el("span", "evname", e.n));
-      head.appendChild(el("span", "pill", e.t));
-      if (e.p !== null && e.p !== undefined) {
-        const p = el("span", "pill " + (e.p ? "pass" : "fail"));
-        p.appendChild(el("span", null, e.p ? "✓" : "✕"));
-        p.appendChild(el("span", null, e.p ? "pass" : "fail"));
-        head.appendChild(p);
+    for (const g of evaluatorGroups(r)) {
+      const grp = el("div", "evgroup");
+      const gh = el("div", "evghead");
+      gh.appendChild(el("span", "evgname", g.label));
+      if (typeof g.value === "number") gh.appendChild(el("span", "evgval", fx(g.value, 1)));
+      gh.appendChild(el("span", "evgnote", g.note));
+      grp.appendChild(gh);
+      for (const e of g.rows) {
+        const row = el("div", "evrow");
+        const head = el("div", "evhead");
+        head.appendChild(el("span", "evname", e.n));
+        head.appendChild(el("span", "pill", e.t));
+        if (e.p !== null && e.p !== undefined) {
+          const p = el("span", "pill " + (e.p ? "pass" : "fail"));
+          p.appendChild(el("span", null, e.p ? "✓" : "✕"));
+          p.appendChild(el("span", null, e.p ? "pass" : "fail"));
+          head.appendChild(p);
+        }
+        const bits = [];
+        if (typeof e.s === "number") bits.push("score " + e.s.toFixed(2));
+        if (typeof e.c === "number") bits.push("conf " + e.c.toFixed(2));
+        if (e.m && e.m !== "deterministic") bits.push(e.m);
+        if (bits.length) head.appendChild(el("span", "evscore", bits.join("  ·  ")));
+        row.appendChild(head);
+        if (e.f) row.appendChild(el("p", "evfb", e.f));
+        grp.appendChild(row);
       }
-      const bits = [];
-      if (typeof e.s === "number") bits.push("score " + e.s.toFixed(2));
-      if (typeof e.c === "number") bits.push("conf " + e.c.toFixed(2));
-      if (e.m && e.m !== "deterministic") bits.push(e.m);
-      if (bits.length) head.appendChild(el("span", "evscore", bits.join("  ·  ")));
-      row.appendChild(head);
-      if (e.f) row.appendChild(el("p", "evfb", e.f));
-      body.appendChild(row);
+      body.appendChild(grp);
     }
     if (!r.ev.length && !r.err) body.appendChild(el("p", "evfb", "No evaluator detail recorded."));
     d.appendChild(body);

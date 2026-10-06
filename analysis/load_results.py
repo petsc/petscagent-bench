@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import math
 import random
+import sys
 from dataclasses import dataclass, field
 from itertools import combinations
 from pathlib import Path
@@ -75,6 +76,8 @@ SCAFFOLD_SHORT = {
 
 # Categories and weights, mirrored from config/green_agent_config.yaml. Kept here
 # so the dashboard can show the weighting without parsing YAML at build time.
+# tests/test_scoring_weights.py holds this equal to the config, because a mirror
+# that drifts shows a plausible weighting that no score was computed under.
 CATEGORY_WEIGHTS = {
     "correctness": 0.35,
     "performance": 0.15,
@@ -82,6 +85,16 @@ CATEGORY_WEIGHTS = {
     "algorithm": 0.15,
     "petsc": 0.20,
 }
+
+# Which category each evaluator feeds. Read from the harness rather than copied,
+# so the detail view groups rows exactly the way the score was aggregated. An
+# evaluator missing from this map is a gate, which gates the composite but is
+# never averaged into a category.
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+from src.metrics.aggregation import MetricsAggregator as _Aggregator  # noqa: E402
+
+EVALUATOR_CATEGORY = dict(_Aggregator.EVALUATOR_CATEGORY_MAP)
 
 TIER_ORDER = ("GOLD", "SILVER", "BRONZE", "FAIL")
 

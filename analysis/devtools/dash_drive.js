@@ -154,5 +154,53 @@ if (!checked) console.log("skip metric strips                   no scored run in
 else if (bad) { failures++; console.log("FAIL metric strips                   " + bad + " of " + checked + " do not add up"); }
 else console.log("ok   metric strips                   " + checked + " decompositions add up");
 
+// Each evaluator group prints a category score and claims the rows beneath it
+// average to it. Recompute that confidence-weighted mean from the rendered rows
+// so the claim is checked rather than asserted.
+function groups(node, out) {
+  out = out || [];
+  if (node && String(node.className || "").split(" ").includes("evgroup")) out.push(node);
+  for (const c of (node && node.children) || []) groups(c, out);
+  return out;
+}
+const num = (s) => {
+  const m = /score (-?[\d.]+)/.exec(s || ""), c = /conf (-?[\d.]+)/.exec(s || "");
+  return m ? { s: parseFloat(m[1]), c: c ? parseFloat(c[1]) : 1 } : null;
+};
+let gchecked = 0, gbad = 0;
+for (let i = 0; i < reg.grid.children.length; i++) {
+  if (!reg.grid.children[i].dispatch) continue;
+  click("grid", i);
+  for (const g of groups(reg.runlist)) {
+    const head = g.children[0];
+    const printed = parseFloat((head.children[1] || {}).textContent);
+    if (!Number.isFinite(printed)) continue;      // the gates group carries no score
+    const vals = [];
+    for (const row of g.children.slice(1)) {
+      const meta = (row.children[0].children || []).slice(-1)[0];
+      const v = num(meta && meta.textContent);
+      if (v) vals.push(v);
+    }
+    if (!vals.length) continue;
+    const den = vals.reduce((a, v) => a + v.c, 0);
+    const mean = vals.reduce((a, v) => a + v.s * v.c, 0) / den * 100;
+    gchecked++;
+    // Rows print their score to two decimals, so a mean rebuilt from what is
+    // on screen can sit half a point off a heading computed from full
+    // precision. A row in the wrong group moves it by several points, which is
+    // what this is looking for.
+    if (Math.abs(mean - printed) > 1.0) {
+      gbad++;
+      if (gbad < 4) {
+        console.log("     " + head.children[0].textContent + " prints " + printed.toFixed(1) +
+                    ", rows average " + mean.toFixed(1));
+      }
+    }
+  }
+}
+if (!gchecked) console.log("skip evaluator groups                no grouped evaluator in any cell");
+else if (gbad) { failures++; console.log("FAIL evaluator groups                " + gbad + " of " + gchecked + " headings disagree with their rows"); }
+else console.log("ok   evaluator groups            " + gchecked + " headings match their rows");
+
 console.log(failures ? "\n" + failures + " FAILURES" : "\nall states clean");
 process.exit(failures ? 1 : 0);
