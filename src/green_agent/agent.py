@@ -21,6 +21,7 @@ import time
 import re
 import fnmatch
 import hashlib
+import shutil
 import math
 import numbers
 import statistics
@@ -39,7 +40,8 @@ from src.util.telemetry import (
 )
 from pathlib import Path
 
-from dataclasses import dataclass, asdict, field
+from dataclasses import dataclass, asdict, field, fields
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 import dotenv
 
@@ -394,6 +396,95 @@ class BenchmarkResult:
     category_scores: Optional[Dict[str, float]] = None
     evaluation_summary: Optional[Dict[str, Any]] = None
     evaluation_details: Optional[List[Dict[str, Any]]] = None
+    # Which scoring pass produced the scores above. A narrowed rescore carries
+    # the problems it did not evaluate through from the file it replays, so one
+    # file can hold records scored at different times by different judges.
+    # Null on records written before this was recorded.
+    scored_at: Optional[str] = None     # UTC ISO 8601, one value per pass
+    scored_by: Optional[str] = None     # the judge model that scored it
+    # Keys found on a recorded record that this version does not declare, held
+    # so they can be written back out unchanged. See _from_record. Spliced back
+    # to the top level on the way out, so this name never reaches the file.
+    unrecognized: Optional[Dict[str, Any]] = None
+
+
+def _from_record(cls, record: Dict[str, Any]) -> Any:
+    """Rebuild a dataclass from a recorded dict, keeping what it cannot use.
+
+    A record read back from an aggregate was written by whatever schema was
+    current that day. Keys this version has retired would raise if passed to
+    the constructor, and keys it has since gained are simply absent.
+
+    Unknown keys are kept rather than dropped. The two cases are
+    indistinguishable from here: a retired field is safe to lose, but a field
+    written by a newer checkout is not, and losing it would be the same silent
+    data loss a carried record exists to prevent. Keeping both costs a dict.
+    """
+    known = {f.name for f in fields(cls)}
+    extra = {k: v for k, v in record.items() if k not in known}
+    obj = cls(**{k: v for k, v in record.items() if k in known})
+    if extra and "unrecognized" in known:
+        obj.unrecognized = extra
+    return obj
+
+
+def _record_to_dict(result: "BenchmarkResult") -> Dict[str, Any]:
+    """Serialize a result, restoring any keys this version does not declare.
+
+    The inverse of _from_record. A carried record goes back out with exactly
+    the keys it came in with, so a rescore under an older checkout cannot
+    quietly strip fields a newer one wrote.
+    """
+    record = asdict(result)
+    extra = record.pop("unrecognized", None) or {}
+    # Cannot collide: _from_record only collects keys the dataclass lacks.
+    record.update(extra)
+    return record
+
+
+def _benchmark_result_from_record(record: Dict[str, Any]) -> BenchmarkResult:
+    """Rebuild a BenchmarkResult from one entry of a recorded aggregate.
+
+    `cases` is the only nested dataclass on BenchmarkResult, so it is the only
+    field needing its own conversion. Everything else is a scalar, a dict, or a
+    list of dicts, which survives assignment unchanged.
+    """
+    record = dict(record)
+    cases = record.pop("cases", None) or []
+    result = _from_record(BenchmarkResult, record)
+    result.cases = [_from_record(TestCaseResult, c) for c in cases]
+    return result
+
+
+def _derive_summary(results: List["BenchmarkResult"]) -> Dict[str, Any]:
+    """Count the run's outcomes from the records themselves.
+
+    Derived rather than accumulated as the loop goes, because a rescore can
+    carry problems it did not evaluate through from the file it replays. A
+    counter incremented per iteration would then describe the problems that
+    ran, beside a results list holding more than that.
+    """
+    tiers = {"GOLD": 0, "SILVER": 0, "BRONZE": 0, "FAIL": 0}
+    unknown = 0
+    for r in results:
+        if r.tier in tiers:
+            tiers[r.tier] += 1
+        else:
+            # A null tier, or one from a schema this version does not know.
+            # Counting it keeps the distribution adding up to the total.
+            unknown += 1
+    runs_count = sum(1 for r in results if r.runs)
+    summary = {
+        "total": len(results),
+        "runs_count": runs_count,
+        "failure_count": len(results) - runs_count,
+        "avg_purple_wall_time_sec": None,
+        "avg_composite_score": None,
+        "tier_distribution": tiers,
+    }
+    if unknown:
+        summary["tier_unknown"] = unknown
+    return summary
 
 
 class Agent:
@@ -412,6 +503,17 @@ class Agent:
         self.max_num_prob = max_num_prob
         # Comma-separated terms narrowing the problem set, None for all of it.
         self.problems = problems
+        # Where results are written, and under which run index. A rescore
+        # updates the run it replays in place: same directory, same index, so
+        # the set keeps one record per run instead of growing a near-duplicate
+        # every time newer evaluators are applied to the same submissions.
+        self.output_dir = Path(replay_path).parent if replay_path else Path("output")
+        self.replay_run_index = None
+        if replay_path:
+            m = re.search(r"-run(\d+)$", Path(replay_path).stem)
+            # A replay file named by hand carries no index, so fall back to
+            # allocating one rather than guessing which run it stands for.
+            self.replay_run_index = int(m.group(1)) if m else None
         self.metrics = {}
         self.green_id = green_id
         self.purple_id = purple_id
@@ -434,6 +536,64 @@ class Agent:
         self.evaluation_pipeline = EvaluationPipeline(config, self.model, self.api_base_url)
         self.metrics_aggregator = MetricsAggregator(config)
         print(f"@@@ Green agent: ✅ Evaluation system initialized with {self.evaluation_pipeline.get_evaluator_count()['total']} evaluators")
+
+    def _merge_replay_records(self, fresh, known_names=None):
+        """Carry through the replayed problems this pass did not evaluate.
+
+        A rescore writes back over the run it replays, rebuilding the aggregate
+        from the problems that ran. Narrowed by --problems or --max-num-prob,
+        that is a subset, and the records left out are not merely absent from
+        the new file: their generated_sources go with them, and replay reads
+        sources from the aggregate rather than from the tree, so those
+        submissions could never be rescored again.
+
+        The replay file's own order is kept. It was itself written by this loop
+        over the dataset, so in the ordinary case it already is dataset order,
+        and it stays stable when the dataset is not.
+
+        Args:
+            fresh: Records this pass evaluated.
+            known_names: Problem names in the current dataset, for warning
+                about carried records that no longer correspond to one. None
+                skips the check.
+
+        Returns:
+            (merged, carried_names), merged being fresh records in place of the
+            replayed ones and carried records elsewhere in the file's order.
+        """
+        if not self.replay_index:
+            return list(fresh), []
+
+        by_name = {r.problem_name: r for r in fresh}
+        merged, carried = [], []
+        for name, record in self.replay_index.items():
+            if name in by_name:
+                merged.append(by_name.pop(name))
+                continue
+            merged.append(_benchmark_result_from_record(record))
+            carried.append(name)
+        # A problem evaluated this pass that the replay file never held. It has
+        # no slot above, so append rather than drop it.
+        merged.extend(r for r in fresh if r.problem_name in by_name)
+
+        if carried:
+            print(
+                f"@@@ Green agent: Carried {len(carried)} scored record(s) "
+                f"through from the replay file: {', '.join(carried)}"
+            )
+        # A problem renamed in data/ is carried under its old name and
+        # evaluated under its new one, so the file holds the same submission
+        # twice and every total counts it twice. Nothing here can tell a rename
+        # from a deletion, so say what was seen rather than guess.
+        if known_names is not None:
+            orphans = [n for n in carried if n not in known_names]
+            if orphans:
+                print(
+                    f"@@@ Green agent: ⚠️  Carried record(s) with no problem of "
+                    f"that name in data/, kept but no longer scoreable: "
+                    f"{', '.join(orphans)}"
+                )
+        return merged, carried
 
     def _replay_response(self, problem_name: str) -> Any:
         """Rebuild the Purple Agent response recorded for a problem.
@@ -673,19 +833,15 @@ class Agent:
 
         Use send_message(message, url) to call participant agents.
         """
+        # Counted from the records once they are all in hand, below. See
+        # _derive_summary for why they cannot be accumulated as the loop goes.
         results: List[BenchmarkResult] = []
-        summary: Dict[str, Any] = {
-            "total": 0,
-            "runs_count": 0,
-            "failure_count": 0,
-            "avg_purple_wall_time_sec": None,
-            "avg_composite_score": None,
-            "tier_distribution": {"GOLD": 0, "SILVER": 0, "BRONZE": 0, "FAIL": 0},
-        }
 
         # input_text = get_message_text(message)
         data_file_path = Path("./data")
-        test_data = select_problems(read_from_json(data_file_path), self.problems)
+        all_data = read_from_json(data_file_path)
+        known_names = {d["problem_name"] for d in all_data}
+        test_data = select_problems(all_data, self.problems)
         limit = self.max_num_prob or len(test_data)
         selected = test_data[:limit]
         if self.problems:
@@ -694,6 +850,9 @@ class Agent:
                 f"'{self.problems}': {', '.join(d['problem_name'] for d in selected)}"
             )
         mcp_initialized = False
+        # One stamp for the whole pass, so every record this pass scored shares
+        # it and a file holding two of them shows two values rather than N.
+        pass_stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
 
         for idx, data in enumerate(selected, start=1):
             pname = data["problem_name"]
@@ -710,6 +869,11 @@ class Agent:
                 problem_id=pid,
                 runs=False,
                 compiles=False,
+                # Stamped here rather than after a successful evaluation, so a
+                # problem that fails below is still attributed to this pass
+                # instead of reading like a record carried in from another one.
+                scored_at=pass_stamp,
+                scored_by=self.model,
             )
             generated_sources = []
 
@@ -819,21 +983,13 @@ class Agent:
                 # Run evaluation system
                 print(f"@@@ Green agent: Evaluating generated code...")
                 await self._evaluate_code(br, data, generated_sources)
-                # Update rolling summary
-                if br.runs:
-                    summary["runs_count"] += 1
-                else:
-                    summary["failure_count"] += 1
-                # Update evaluation summary
-                if br.tier:
-                    summary["tier_distribution"][br.tier] += 1
                 br.efficiency_score = _calculate_efficiency_score(
                     br, self.config.get("scoring", {}).get("efficiency", {})
                 )
                 # Optional: per-case artifact (useful for debugging)
                 await updater.add_artifact(
                     name=f"benchmark_result_{pname}.json",
-                    parts=[new_text_part(json.dumps(asdict(br), indent=2))],
+                    parts=[new_text_part(json.dumps(_record_to_dict(br), indent=2))],
                 )
 
             except Exception as e:
@@ -845,21 +1001,34 @@ class Agent:
                 br.efficiency_score = _calculate_efficiency_score(
                     br, self.config.get("scoring", {}).get("efficiency", {})
                 )
-                summary["failure_count"] += 1
-                summary["tier_distribution"]["FAIL"] += 1
 
             finally:
-                summary["total"] += 1
                 results.append(br)
 
         if mcp_initialized:
             await self.mcp_client.finalize()
             mcp_initialized = False
 
+        # Everything below is built from `results`, so the carried records have
+        # to join it here: the aggregate, the source tree, and the manifest the
+        # dashboard reads to find a problem's code are all written from it.
+        scored_this_pass = results
+        results, carried_over = self._merge_replay_records(results, known_names)
+
+        # Aggregates about what the Purple produced cover only what this pass
+        # asked it for. A carried record was generated by an earlier run, and
+        # it carries that run's wall time, tokens and request counts, so
+        # folding it in would bill this pass for work it never did. Aggregates
+        # about scores cover every record in the file, because the file is what
+        # they describe.
+        summary = _derive_summary(results)
+        summary["scored_this_pass"] = len(scored_this_pass)
+        summary["carried_over_count"] = len(carried_over)
+
         # Final summary artifact
         times = [
             r.purple_wall_time_sec
-            for r in results
+            for r in scored_this_pass
             if not r.purple_response_replayed and r.purple_wall_time_sec is not None
         ]
         summary["avg_purple_wall_time_sec"] = (
@@ -872,59 +1041,124 @@ class Agent:
 
         # Token cost of code generation across the suite (metadata only).
         # prompt=input, completion=output, cached=prompt tokens served from cache.
-        live_results = [r for r in results if not r.purple_response_replayed]
+        live_results = [r for r in scored_this_pass if not r.purple_response_replayed]
         summary["total_prompt_tokens"] = sum(r.prompt_tokens or 0 for r in live_results)
         summary["total_completion_tokens"] = sum(r.completion_tokens or 0 for r in live_results)
         summary["total_tokens"] = sum(r.total_tokens or 0 for r in live_results)
         summary["total_cached_tokens"] = sum(r.cached_tokens or 0 for r in live_results)
         summary["purple_efficiency"] = _purple_efficiency_summary(
-            results, self.config.get("scoring", {}).get("efficiency", {})
+            scored_this_pass, self.config.get("scoring", {}).get("efficiency", {})
         )
+        # _purple_efficiency_summary counts the cases it was given, which are
+        # this pass's. Say how many more the file holds, or the count reads as
+        # a run that lost problems.
+        summary["purple_efficiency"]["carried_over_cases"] = len(carried_over)
 
         # Save output as <purple_model>-judged-by-<green_model>-run<N>.json so that
         # repeated launches do not overwrite each other. Prefer the model the Purple
         # self-reported in its telemetry (so a composite agent can label itself, e.g.
         # "pdesim-<model>-c<N>"), falling back to the purple_model task tag.
-        reported_model = _reported_model(results)
+        # Over this pass's records only. A carried record was generated live by
+        # an earlier run, so it is not marked replayed and would satisfy
+        # _reported_model, renaming the file a rescore is meant to overwrite.
+        # The rescore would then land beside its own earlier output, two files
+        # under two variant tags both claiming the same run index.
+        reported_model = _reported_model(scored_this_pass)
         effective_model = reported_model or self.purple_model
-        output_dir = Path("output")
-        output_dir.mkdir(exist_ok=True)
+        output_dir = self.output_dir
+        output_dir.mkdir(parents=True, exist_ok=True)
 
         # _name_slug keeps hyphens so a composite label stays readable.
         model_slug = _name_slug(effective_model)
         judge_slug = _name_slug(self.model)
         prefix = f"{model_slug}-judged-by-{judge_slug}"
-        # Take the next free index by creating its directory, which is atomic
-        # and so settles a race between two tasks finishing at once. The loser
-        # sees FileExistsError and takes the next index rather than losing a
-        # whole run's results to the winner's aggregate.
-        while True:
-            # Count every artifact a run leaves behind, or an index whose JSON
-            # was deleted but whose tree survived would be reused forever.
-            # "sources" is the pre-rename name, still present in output/.
-            used = [
-                int(m.group(1))
-                for p in [
-                    *output_dir.glob(f"{prefix}-run*.json"),
-                    *(output_dir / "runs").glob(f"{prefix}-run*"),
-                    *(output_dir / "sources").glob(f"{prefix}-run*"),
-                ]
-                if (m := re.search(r"-run(\d+)(?:\.json)?$", p.name))
-            ]
-            run_index = max(used, default=0) + 1
+        # A rescore reuses the index of the run it replays, overwriting it.
+        # Allocating a fresh one instead would leave two records of a single
+        # set of submissions, which a mean over runs would then double count.
+        if self.replay_run_index is not None:
+            run_index = self.replay_run_index
             run_dir = output_dir / "runs" / f"{prefix}-run{run_index}"
-            try:
-                run_dir.mkdir(parents=True, exist_ok=False)
-                break
-            except FileExistsError:
-                # The rescan now counts this directory, so the index rises and
-                # the loop cannot spin.
-                continue
+            run_dir.mkdir(parents=True, exist_ok=True)
+            # The tree was called "sources" before the rename, so a set
+            # recorded back then still holds the superseded copy. Drop it, or
+            # the loader keeps finding code that no longer matches the scores.
+            legacy = output_dir / "sources" / f"{prefix}-run{run_index}"
+            if legacy.is_dir():
+                shutil.rmtree(legacy)
+        else:
+            # Take the next free index by creating its directory, which is
+            # atomic and so settles a race between two tasks finishing at
+            # once. The loser sees FileExistsError and takes the next index
+            # rather than losing a whole run's results to the winner's
+            # aggregate.
+            while True:
+                # Count every artifact a run leaves behind, or an index whose
+                # JSON was deleted but whose tree survived would be reused
+                # forever. "sources" is the pre-rename name.
+                used = [
+                    int(m.group(1))
+                    for p in [
+                        *output_dir.glob(f"{prefix}-run*.json"),
+                        *(output_dir / "runs").glob(f"{prefix}-run*"),
+                        *(output_dir / "sources").glob(f"{prefix}-run*"),
+                    ]
+                    if (m := re.search(r"-run(\d+)(?:\.json)?$", p.name))
+                ]
+                run_index = max(used, default=0) + 1
+                run_dir = output_dir / "runs" / f"{prefix}-run{run_index}"
+                try:
+                    run_dir.mkdir(parents=True, exist_ok=False)
+                    break
+                except FileExistsError:
+                    # The rescan now counts this directory, so the index rises
+                    # and the loop cannot spin.
+                    continue
 
+        local_path, json_data = self._write_aggregate(
+            results, summary, carried_over, pass_stamp,
+            output_dir, run_dir, prefix, run_index, reported_model,
+        )
+        print(f"@@@ Green agent: Saved results to {local_path}")
+        await updater.add_artifact(
+            name=local_path.name,
+            parts=[new_text_part(json.dumps(json_data, indent=2))],
+            metadata=summary,
+        )
+
+        # Create evaluation summary report
+        await self._create_evaluation_report(results, summary, updater)
+
+        avg = summary.get("avg_composite_score")
+        carried_note = (
+            f" {len(carried_over)} carried over." if carried_over else ""
+        )
+        await updater.update_status(
+            TaskState.TASK_STATE_COMPLETED,
+            new_agent_text_message(
+                f"Done. {summary['runs_count']}/{summary['total']} succeeded."
+                f"{carried_note} "
+                f"Avg score: {f'{avg:.1f}/100' if avg is not None else 'n/a'}"
+            ),
+        )
+
+    def _write_aggregate(
+        self, results, summary, carried_over, pass_stamp,
+        output_dir, run_dir, prefix, run_index, reported_model,
+    ):
+        """Write the run's aggregate JSON and its source tree.
+
+        Separated from run() so the shape of what lands on disk can be tested
+        without a Purple Agent, an MCP server or a judge. The run index and
+        directory are decided by the caller, because allocating them is what
+        settles a race between two runs finishing at once.
+
+        Returns:
+            (path, json_data) for the caller to report and attach.
+        """
         local_path = output_dir / f"{prefix}-run{run_index}.json"
         # Built once so the aggregate and the per-problem files below hold the
         # same data. They are indented differently, being at different depths.
-        records = [asdict(r) for r in results]
+        records = [_record_to_dict(r) for r in results]
         json_data = {
             "agent": self.purple_id,
             # purple_model is the tag the run was launched with, so the record
@@ -935,9 +1169,16 @@ class Agent:
             "reported_model": reported_model,
             "judge_model": self.model,
             "run_index": run_index,
-            # Null for a full run, so a short run is not mistaken for one
-            # that lost problems.
+            # Which problems this pass evaluated. Null for a full run. It no
+            # longer implies a short results list: a narrowed rescore carries
+            # the rest through, and carried_over names them.
             "problem_filter": self.problems,
+            # Problems whose scores came from the replayed file rather than
+            # from this pass. Null when there were none, so a file that mixes
+            # two scoring passes says so without a reader diffing the
+            # per-record scored_at stamps.
+            "carried_over": carried_over or None,
+            "scored_at": pass_stamp,
             "summary": summary,
             "results": records,
         }
@@ -960,23 +1201,7 @@ class Agent:
         (run_dir / "manifest.json").write_text(
             json.dumps(source_manifest, indent=2), encoding="utf-8"
         )
-        print(f"@@@ Green agent: Saved results to {local_path}")
-        await updater.add_artifact(
-            name=local_path.name,
-            parts=[new_text_part(json.dumps(json_data, indent=2))],
-            metadata=summary,
-        )
-
-        # Create evaluation summary report
-        await self._create_evaluation_report(results, summary, updater)
-
-        await updater.update_status(
-            TaskState.TASK_STATE_COMPLETED,
-            new_agent_text_message(
-                f"Done. {summary['runs_count']}/{summary['total']} succeeded. "
-                f"Avg score: {summary.get('avg_composite_score', 0):.1f}/100"
-            ),
-        )
+        return local_path, json_data
 
     async def _evaluate_code(
         self,
@@ -1067,6 +1292,11 @@ class Agent:
             summary: Summary statistics
             updater: TaskUpdater for creating artifacts
         """
+        def pct(tier):
+            # A run with nothing in it is a report to write, not a crash.
+            total = summary["total"]
+            return f"{summary['tier_distribution'][tier] / total * 100:.1f}%" if total else "n/a"
+
         report_lines = [
             "=" * 80,
             "EVALUATION REPORT",
@@ -1081,13 +1311,19 @@ class Agent:
                 else "Average Purple Agent Time: n/a"
             ),
             "",
-            f"Average Composite Score: {summary['avg_composite_score']:.1f}/100",
+            (
+                f"Average Composite Score: {summary['avg_composite_score']:.1f}/100"
+                if summary.get("avg_composite_score") is not None
+                else "Average Composite Score: n/a"
+            ),
             "",
             "Tier Distribution:",
-            f"  🥇 GOLD:   {summary['tier_distribution']['GOLD']} ({summary['tier_distribution']['GOLD']/summary['total']*100:.1f}%)",
-            f"  🥈 SILVER: {summary['tier_distribution']['SILVER']} ({summary['tier_distribution']['SILVER']/summary['total']*100:.1f}%)",
-            f"  🥉 BRONZE: {summary['tier_distribution']['BRONZE']} ({summary['tier_distribution']['BRONZE']/summary['total']*100:.1f}%)",
-            f"  ❌ FAIL:   {summary['tier_distribution']['FAIL']} ({summary['tier_distribution']['FAIL']/summary['total']*100:.1f}%)",
+            *(
+                f"  {emoji} {name + ':':<7} {summary['tier_distribution'][name]} ({pct(name)})"
+                for emoji, name in (
+                    ("🥇", "GOLD"), ("🥈", "SILVER"), ("🥉", "BRONZE"), ("❌", "FAIL"),
+                )
+            ),
             "",
             "=" * 80,
             "PER-PROBLEM RESULTS",
@@ -1103,11 +1339,25 @@ class Agent:
                 'FAIL': '❌'
             }.get(r.tier or 'FAIL', '❓')
 
-            report_lines.append(f"{tier_emoji} {r.problem_name} (Score: {r.composite_score:.1f}/100)")
+            # A carried record can hold a null score, or categories from a
+            # schema that named them differently, and neither is worth losing
+            # the whole report over.
+            shown = f"{r.composite_score:.1f}/100" if r.composite_score is not None else "n/a"
+            stamp = f"  [scored {r.scored_at}]" if r.scored_at else ""
+            report_lines.append(f"{tier_emoji} {r.problem_name} (Score: {shown}){stamp}")
             if r.category_scores:
-                report_lines.append(f"   Correctness: {r.category_scores['correctness']:.1f}, "
-                                  f"Performance: {r.category_scores['performance']:.1f}, "
-                                  f"Code Quality: {r.category_scores['code_quality']:.1f}")
+                cat = r.category_scores
+                report_lines.append(
+                    "   " + ", ".join(
+                        f"{label}: {cat[key]:.1f}"
+                        for label, key in (
+                            ("Correctness", "correctness"),
+                            ("Performance", "performance"),
+                            ("Code Quality", "code_quality"),
+                        )
+                        if isinstance(cat.get(key), numbers.Number)
+                    )
+                )
             report_lines.append("")
 
         report_text = "\n".join(report_lines)

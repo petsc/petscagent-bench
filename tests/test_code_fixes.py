@@ -478,6 +478,41 @@ class CodeFixTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 agent._replay_response(name)
 
+    def test_a_rescore_writes_back_to_the_directory_it_replays(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        from src.green_agent.agent import Agent
+
+        cfg = {"evaluation": {"llm": {"model": "none/none"}}}
+
+        def build(**kw):
+            return Agent(config=cfg, purple_agent_url="http://purple",
+                         mcp_server_url="http://mcp", **kw)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            recorded = Path(tmp) / "recorded" / "pdesim-judged-by-judge-run3.json"
+            recorded.parent.mkdir()
+            recorded.write_text(json.dumps({"results": []}))
+
+            # A plain run still writes to the live output tree, allocating an
+            # index rather than reusing one.
+            plain = build()
+            self.assertEqual(plain.output_dir, Path("output"))
+            self.assertIsNone(plain.replay_run_index)
+
+            # A rescore updates the set it replays rather than landing beside
+            # unrelated runs in output/, and keeps that run's index so the
+            # record it rescores is replaced instead of duplicated.
+            rescore = build(replay_path=str(recorded))
+            self.assertEqual(rescore.output_dir, recorded.parent)
+            self.assertEqual(rescore.replay_run_index, 3)
+
+            # A file named by hand carries no index, so the allocator runs.
+            plain_name = recorded.parent / "recorded.json"
+            plain_name.write_text(json.dumps({"results": []}))
+            self.assertIsNone(build(replay_path=str(plain_name)).replay_run_index)
+
     def test_select_problems_matches_by_substring_and_glob(self):
         from src.green_agent.agent import select_problems
 
@@ -566,6 +601,409 @@ class CodeFixTests(unittest.TestCase):
         )
         self.assertEqual(records[0]["server_name"], "helper.h")
         self.assertEqual(agent.mcp_client.calls[0]["filename"], "helper.h")
+
+
+class FakeUpdater:
+    """Collects what the agent reports instead of sending it anywhere."""
+
+    def __init__(self):
+        self.artifacts = []
+        self.statuses = []
+
+    async def add_artifact(self, name=None, parts=None, metadata=None):
+        self.artifacts.append((name, parts, metadata))
+
+    async def update_status(self, state=None, message=None):
+        self.statuses.append((state, message))
+
+
+def a_record(name, **kw):
+    """One entry of a recorded aggregate, as a dict read back from JSON."""
+    record = {
+        "problem_name": name,
+        "problem_id": name,
+        "runs": True,
+        "compiles": True,
+        "composite_score": 80.0,
+        "tier": "SILVER",
+        "generated_sources": [
+            {"original_name": "main.c", "server_name": f"{name}.c",
+             "source": f"/* {name} */", "sha256": "abc"}
+        ],
+    }
+    record.update(kw)
+    return record
+
+
+class NarrowedReplayKeepsEveryProblemTest(unittest.TestCase):
+    """A rescore of some problems must not delete the records of the rest.
+
+    A rescore writes back over the run it replays. Rebuilding the aggregate
+    from only the problems that ran drops the others' generated_sources, and
+    replay reads sources from the aggregate rather than from the tree, so those
+    submissions could never be rescored again.
+    """
+
+    def build_agent(self, replay_records):
+        from src.green_agent.agent import Agent
+
+        agent = Agent.__new__(Agent)
+        agent.replay_index = {r["problem_name"]: r for r in replay_records}
+        return agent
+
+    def test_a_record_survives_the_round_trip_through_a_dict(self):
+        from dataclasses import asdict
+        from src.green_agent.agent import (
+            BenchmarkResult, TestCaseResult, _benchmark_result_from_record,
+        )
+
+        original = BenchmarkResult(
+            problem_name="p", problem_id="1", runs=True, compiles=True,
+            composite_score=77.5, tier="SILVER",
+            category_scores={"correctness": 90.0},
+            generated_sources=[{"original_name": "a.c", "source": "x"}],
+            cases=[TestCaseResult(index=0, args="-n 1", nsize=2, runs=True,
+                                  stdout="out", execution_time_sec=1.5)],
+            scored_at="2026-01-01T00:00:00+00:00", scored_by="judge",
+        )
+        rebuilt = _benchmark_result_from_record(asdict(original))
+        self.assertEqual(asdict(rebuilt), asdict(original))
+        # cases must come back as dataclasses, not the dicts they serialized to.
+        self.assertIsInstance(rebuilt.cases[0], TestCaseResult)
+
+    def test_a_record_from_another_schema_still_rebuilds(self):
+        from src.green_agent.agent import _benchmark_result_from_record
+
+        # A key this version has dropped must not raise, and a record missing
+        # every optional key must still produce a result. Either one refusing
+        # would make an older file unreplayable, which is the bug being fixed.
+        older = _benchmark_result_from_record(
+            {"problem_name": "p", "problem_id": "1", "runs": False,
+             "compiles": False, "a_field_we_removed": 1}
+        )
+        self.assertEqual(older.problem_name, "p")
+        self.assertEqual(older.cases, [])
+        self.assertIsNone(older.scored_at)
+
+    def test_a_field_this_version_does_not_know_is_written_back_out(self):
+        from src.green_agent.agent import (
+            _benchmark_result_from_record, _record_to_dict,
+        )
+
+        # Real output files carry purple_response_from_cache, retired when the
+        # purple cache became replay. Dropping a retired field is harmless, but
+        # nothing here can tell it from a field a newer checkout wrote, and
+        # losing that is the data loss a carried record exists to prevent.
+        original = {"problem_name": "p", "problem_id": "1", "runs": True,
+                    "compiles": True, "purple_response_from_cache": False,
+                    "something_newer": {"nested": 1}}
+        out = _record_to_dict(_benchmark_result_from_record(original))
+        for key, value in original.items():
+            self.assertEqual(out[key], value)
+        # The holding field is an implementation detail and never reaches disk.
+        self.assertNotIn("unrecognized", out)
+
+    def test_the_merge_keeps_the_problems_it_did_not_evaluate(self):
+        from src.green_agent.agent import BenchmarkResult
+
+        agent = self.build_agent([a_record("alpha"), a_record("beta"), a_record("gamma")])
+        fresh = BenchmarkResult(problem_name="beta", problem_id="beta",
+                                runs=True, compiles=True, composite_score=91.0)
+
+        merged, carried = agent._merge_replay_records([fresh])
+
+        self.assertEqual([r.problem_name for r in merged], ["alpha", "beta", "gamma"])
+        self.assertEqual(carried, ["alpha", "gamma"])
+        # The freshly scored record wins its slot, in place.
+        self.assertIs(merged[1], fresh)
+        # And the point of the whole exercise: the other two keep their code.
+        for r in (merged[0], merged[2]):
+            self.assertTrue(r.generated_sources)
+            self.assertEqual(r.composite_score, 80.0)
+
+    def test_a_full_pass_carries_nothing(self):
+        from src.green_agent.agent import BenchmarkResult
+
+        agent = self.build_agent([a_record("alpha"), a_record("beta")])
+        fresh = [
+            BenchmarkResult(problem_name=n, problem_id=n, runs=True, compiles=True)
+            for n in ("alpha", "beta")
+        ]
+        merged, carried = agent._merge_replay_records(fresh)
+        self.assertEqual(carried, [])
+        self.assertEqual([r.problem_name for r in merged], ["alpha", "beta"])
+
+    def test_a_plain_run_is_untouched(self):
+        from src.green_agent.agent import Agent, BenchmarkResult
+
+        agent = Agent.__new__(Agent)
+        agent.replay_index = None
+        fresh = [BenchmarkResult(problem_name="p", problem_id="1",
+                                 runs=True, compiles=True)]
+        merged, carried = agent._merge_replay_records(fresh)
+        self.assertEqual(carried, [])
+        self.assertEqual([r.problem_name for r in merged], ["p"])
+
+    def test_a_problem_absent_from_the_replay_file_is_still_kept(self):
+        from src.green_agent.agent import BenchmarkResult
+
+        agent = self.build_agent([a_record("alpha")])
+        fresh = BenchmarkResult(problem_name="new_problem", problem_id="2",
+                                runs=True, compiles=True)
+        merged, carried = agent._merge_replay_records([fresh])
+        # It has no slot in the replay file's order, so it goes at the end
+        # rather than being dropped.
+        self.assertEqual([r.problem_name for r in merged], ["alpha", "new_problem"])
+        self.assertEqual(carried, ["alpha"])
+
+
+class CarriedRecordsAreNotThisPassesWorkTest(unittest.TestCase):
+    """A carried record was generated by an earlier run.
+
+    Every "did this run do the work" filter keys off purple_response_replayed,
+    and a record carried from a first-generation file has that flag false. The
+    aggregates about generation must therefore be computed over this pass's
+    records, not the merged list.
+    """
+
+    def a_live_looking_record(self):
+        from src.green_agent.agent import _benchmark_result_from_record
+
+        return _benchmark_result_from_record(a_record(
+            "carried",
+            purple_response_replayed=False,
+            purple_wall_time_sec=42.0,
+            purple_request_count=3,
+            purple_request_bytes=1000,
+            prompt_tokens=500, completion_tokens=250, total_tokens=750,
+            purple_telemetry={"model": "some-other-purple"},
+        ))
+
+    def test_a_carried_record_does_not_rename_the_output_file(self):
+        from src.green_agent.agent import _reported_model
+
+        # _reported_model names the output file. A carried record satisfying
+        # it would make a rescore write beside the file it meant to overwrite,
+        # leaving two files under two variant tags at the same run index.
+        self.assertEqual(
+            _reported_model([self.a_live_looking_record()]), "some-other-purple"
+        )
+        # Which is why it must be called over this pass's records only. An
+        # empty pass reports nothing, so the configured tag names the file.
+        self.assertIsNone(_reported_model([]))
+
+    def test_a_carried_record_is_excluded_from_measured_effort(self):
+        from src.green_agent.agent import _purple_efficiency_summary
+
+        carried = self.a_live_looking_record()
+        # Over this pass's records, which is the empty set for a rescore that
+        # evaluated nothing live.
+        measured = _purple_efficiency_summary([])["benchmark_measured"]
+        self.assertEqual(measured["request_count"], 0)
+        self.assertIsNone(measured["median_wall_time_sec"])
+        # Had it been folded in, this run would report an earlier run's effort.
+        billed = _purple_efficiency_summary([carried])["benchmark_measured"]
+        self.assertEqual(billed["request_count"], 3)
+
+
+class DerivedSummaryTest(unittest.TestCase):
+    """Counters come from the records, so a merged file counts all of them."""
+
+    def results(self, *specs):
+        from src.green_agent.agent import BenchmarkResult
+
+        return [
+            BenchmarkResult(problem_name=n, problem_id=n, runs=runs,
+                            compiles=True, tier=tier)
+            for n, runs, tier in specs
+        ]
+
+    def test_the_counters_describe_the_whole_merged_list(self):
+        from src.green_agent.agent import _derive_summary
+
+        summary = _derive_summary(self.results(
+            ("a", True, "GOLD"), ("b", True, "SILVER"), ("c", False, "FAIL"),
+        ))
+        self.assertEqual(summary["total"], 3)
+        self.assertEqual(summary["runs_count"], 2)
+        self.assertEqual(summary["failure_count"], 1)
+        self.assertEqual(sum(summary["tier_distribution"].values()), 3)
+
+    def test_an_unknown_tier_is_counted_rather_than_crashing(self):
+        from src.green_agent.agent import _derive_summary
+
+        # A carried record can hold a null tier, or one from a schema this
+        # version does not know. Indexing the distribution with it would raise.
+        summary = _derive_summary(self.results(
+            ("a", True, "GOLD"), ("b", True, None), ("c", True, "PLATINUM"),
+        ))
+        self.assertEqual(summary["total"], 3)
+        self.assertEqual(summary["tier_distribution"]["GOLD"], 1)
+        self.assertEqual(summary["tier_unknown"], 2)
+
+    def test_an_empty_run_counts_to_zero(self):
+        from src.green_agent.agent import _derive_summary
+
+        summary = _derive_summary([])
+        self.assertEqual(summary["total"], 0)
+        self.assertIsNone(summary["avg_composite_score"])
+
+
+class TheWrittenFileDescribesTheMergeTest(unittest.TestCase):
+    """What lands on disk after a narrowed rescore.
+
+    Drives the real write path, so the aggregate, the source tree and the
+    manifest the dashboard reads are all checked together.
+    """
+
+    def write(self, tmp, results, carried_over, problems):
+        import json
+        from pathlib import Path
+        from src.green_agent.agent import Agent, _derive_summary
+
+        agent = Agent.__new__(Agent)
+        agent.purple_id, agent.purple_model, agent.model = "purple", "tag", "judge"
+        agent.problems = problems
+        out = Path(tmp)
+        run_dir = out / "runs" / "tag-judged-by-judge-run3"
+        run_dir.mkdir(parents=True)
+        path, _ = agent._write_aggregate(
+            results, _derive_summary(results), carried_over,
+            "2026-10-06T12:00:00+00:00", out, run_dir,
+            "tag-judged-by-judge", 3, None,
+        )
+        return path, json.loads(path.read_text()), run_dir
+
+    def test_a_narrowed_rescore_writes_the_whole_set_back(self):
+        import json
+        import tempfile
+        from src.green_agent.agent import (
+            BenchmarkResult, _benchmark_result_from_record,
+        )
+
+        fresh = BenchmarkResult(
+            problem_name="beta", problem_id="beta", runs=True, compiles=True,
+            composite_score=91.0, tier="GOLD",
+            scored_at="2026-10-06T12:00:00+00:00", scored_by="judge",
+            generated_sources=[{"original_name": "b.c", "server_name": "b.c",
+                                "source": "/* new beta */", "sha256": "bbb"}],
+        )
+        results = [
+            _benchmark_result_from_record(a_record("alpha")),
+            fresh,
+            _benchmark_result_from_record(a_record("gamma")),
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            path, doc, run_dir = self.write(tmp, results, ["alpha", "gamma"], "beta")
+
+            # The file keeps the run index it replaced, so the rescore
+            # overwrites that run rather than landing beside it.
+            self.assertEqual(path.name, "tag-judged-by-judge-run3.json")
+            self.assertEqual(len(doc["results"]), 3)
+            self.assertEqual([r["problem_name"] for r in doc["results"]],
+                             ["alpha", "beta", "gamma"])
+            # A mixed file says so at the top level, rather than leaving a
+            # reader to diff the per-record stamps.
+            self.assertEqual(doc["carried_over"], ["alpha", "gamma"])
+            self.assertEqual(doc["problem_filter"], "beta")
+            self.assertEqual(doc["summary"]["total"], 3)
+            self.assertEqual(doc["scored_at"], "2026-10-06T12:00:00+00:00")
+
+            by_name = {r["problem_name"]: r for r in doc["results"]}
+            # The property the bug destroyed: the carried records still hold
+            # the sources, so they can be replayed again.
+            for name in ("alpha", "gamma"):
+                self.assertTrue(by_name[name]["generated_sources"])
+                self.assertIsNone(by_name[name]["scored_at"])
+            self.assertEqual(by_name["beta"]["scored_at"],
+                             "2026-10-06T12:00:00+00:00")
+
+            # And the manifest the dashboard reads lists every problem's code,
+            # not just the one that was rescored.
+            manifest = json.loads((run_dir / "manifest.json").read_text())
+            self.assertEqual(
+                sorted(m["problem_name"] for m in manifest),
+                ["alpha", "beta", "gamma"],
+            )
+            for entry in manifest:
+                self.assertTrue((run_dir / entry["filename"]).is_file())
+
+    def test_a_full_run_says_it_carried_nothing(self):
+        import tempfile
+        from src.green_agent.agent import BenchmarkResult
+
+        r = BenchmarkResult(problem_name="p", problem_id="1", runs=True,
+                            compiles=True, tier="GOLD", composite_score=90.0)
+        with tempfile.TemporaryDirectory() as tmp:
+            _, doc, _ = self.write(tmp, [r], [], None)
+            self.assertIsNone(doc["carried_over"])
+            self.assertIsNone(doc["problem_filter"])
+
+    def test_a_field_this_version_retired_survives_the_write(self):
+        import tempfile
+        from src.green_agent.agent import _benchmark_result_from_record
+
+        # Real files carry purple_response_from_cache. A rescore must write it
+        # back rather than strip it from every record it did not evaluate.
+        carried = _benchmark_result_from_record(
+            a_record("alpha", purple_response_from_cache=False)
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            _, doc, _ = self.write(tmp, [carried], ["alpha"], "beta")
+            self.assertIs(doc["results"][0]["purple_response_from_cache"], False)
+            self.assertNotIn("unrecognized", doc["results"][0])
+
+
+class ReportSurvivesAMixedFileTest(unittest.TestCase):
+    """The report must describe a merged file rather than crash on it."""
+
+    def report_text(self, results, summary):
+        from src.green_agent.agent import Agent
+
+        agent = Agent.__new__(Agent)
+        updater = FakeUpdater()
+        asyncio.run(agent._create_evaluation_report(results, summary, updater))
+        return "\n".join(
+            p.text for name, parts, _ in updater.artifacts
+            if name == "evaluation_report.txt" for p in parts
+        )
+
+    def test_an_empty_run_reports_rather_than_dividing_by_zero(self):
+        from src.green_agent.agent import _derive_summary
+
+        text = self.report_text([], _derive_summary([]))
+        self.assertIn("Total Problems: 0", text)
+        self.assertIn("Average Composite Score: n/a", text)
+
+    def test_a_record_with_no_score_does_not_break_the_report(self):
+        from src.green_agent.agent import BenchmarkResult, _derive_summary
+
+        # A carried record from a file where evaluation never finished.
+        unscored = BenchmarkResult(problem_name="carried", problem_id="1",
+                                   runs=True, compiles=True,
+                                   composite_score=None, tier=None)
+        scored = BenchmarkResult(problem_name="fresh", problem_id="2",
+                                 runs=True, compiles=True,
+                                 composite_score=90.0, tier="GOLD",
+                                 scored_at="2026-10-06T00:00:00+00:00")
+        results = [unscored, scored]
+        summary = _derive_summary(results)
+        summary["avg_composite_score"] = 90.0
+        text = self.report_text(results, summary)
+        self.assertIn("carried (Score: n/a)", text)
+        self.assertIn("fresh (Score: 90.0/100)", text)
+        # The stamp is what makes a mixed file legible.
+        self.assertIn("scored 2026-10-06T00:00:00+00:00", text)
+
+    def test_partial_category_scores_do_not_break_the_report(self):
+        from src.green_agent.agent import BenchmarkResult, _derive_summary
+
+        r = BenchmarkResult(problem_name="p", problem_id="1", runs=True,
+                            compiles=True, composite_score=50.0, tier="BRONZE",
+                            category_scores={"correctness": 50.0})
+        text = self.report_text([r], _derive_summary([r]))
+        self.assertIn("Correctness: 50.0", text)
+        self.assertNotIn("Performance:", text)
 
 
 if __name__ == "__main__":
