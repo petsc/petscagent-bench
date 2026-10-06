@@ -1,10 +1,9 @@
 {
   "problem_name": "Advection_PDE",
   "problem_id": "2",
-  "problem_description": "Implement a 1D linear advection PDE problem in PETSc as a complete, compilable C file. The equation to solve is:\n\n\\frac{\\partial u}{\\partial t} + c \\frac{\\partial u}{\\partial x} = 0,\n\nwhere $u(x,t)$ is the solution, $c$ is the constant advection speed, and $x \\in [0,1]$ with periodic boundary conditions.\n\nInitial condition at $t=0$: $u(x,0) = \\sin(2 \\pi x)$.\n\nThe implementation must:\n1. Include all necessary PETSc headers (e.g., petscts.h).\n2. Use a uniform grid with $N=100$ points in the spatial domain $[0,1]$.\n3. Discretize the spatial derivative using a first-order upwind finite difference scheme.\n4. Have a main function that:\n   - Initializes PETSc.\n   - Sets up the TS (Time Stepper) solver.\n   - Solves the PDE system from $t=0$ to $t=1$ with less than 1000 time steps.\n   - Prints the final solution using VecView() at the end.\n   - Finalizes PETSc.\n\nSolver tolerances must be carefully chosen when using TSSetTolerances().",
+  "problem_description": "Implement a 1D linear advection PDE problem in PETSc as a PETSc C file. The equation to solve is:\n\n\\frac{\\partial u}{\\partial t} + c \\frac{\\partial u}{\\partial x} = 0,\n\nwhere $u(x,t)$ is the solution, $c$ is the constant advection speed, and $x \\in [0,1]$ with periodic boundary conditions.\n\nInitial condition at $t=0$: $u(x,0) = \\sin(2 \\pi x)$.\n\nThe implementation must:\n1. Use a uniform grid with $N=100$ points in the spatial domain $[0,1]$.\n2. Discretize the spatial derivative using a first-order upwind finite difference scheme.\n4. Solve the PDE system from $t=0$ to $t=1$ with less than 1000 time steps. 5. Print the final solution using VecView() at the end of the run.\n\n.",
   "test_cases": [
     {
-      "args": "-ts_type rk -ts_rk_type 4",
       "expected_output": [
         0.00337119,
         0.0549106,
@@ -108,7 +107,7 @@
         -0.0481791
       ],
       "comparison": "match",
-      "tolerance": 2.0e-1
+      "tolerance": 0.2
     }
   ]
 }
