@@ -51,14 +51,40 @@ VARIANTS = [
 JUDGES = ["anthropic/claudeopus46", "openai/gpt52"]
 RUNS = (1, 2, 3)
 
+# Declared test cases per problem, shaped like data/*.json: one invocation for
+# most problems and six for GradShafranov, one of them on four ranks. The
+# arguments are abbreviated, but the long ones are kept long because they are
+# what the drill-down has to lay out.
+CASES = {
+    "Advection_PDE": [("-ts_type rk -ts_rk_type 4", 1)],
+    "Rosenbrock_banana": [("-tao_view -tao_monitor", 1)],
+    "Robertson_ODE": [("-ts_type cn -ts_time_step 1e-7 -ts_adapt_type basic", 1)],
+    "scatter_vecmpi": [("-N 10", 3)],
+    "DarcyFlow2D_Steady": [("", 1)],
+    "NS2D_FV_Implicit": [("-ts_type beuler", 1)],
+    "GradShafranov": [
+        ("-ksp_rtol 1e-12", 1),
+        ("-da_grid_x 129 -da_grid_y 129 -ksp_rtol 1e-12", 1),
+        ("-da_grid_x 129 -da_grid_y 129 -ksp_rtol 1e-12", 4),
+        ("-cf_A -0.05 -cf_c 0.0134505,-0.3265206,0.0036974,0,0,0 -cf_xmin 0.142 "
+         "-cf_xmax 1.858 -cf_ymin -1.716 -cf_ymax 1.716 -ksp_rtol 1e-12", 1),
+        ("-cf_A -0.155 -cf_c 0.1083766,0.8896016,-1.0385641,0,0,0 -cf_xmin 0.648 "
+         "-cf_xmax 1.352 -cf_ymin -0.65824 -cf_ymax 0.65824 -ksp_rtol 1e-12", 1),
+        ("-cf_c 0.0666504,-0.1954979,-0.0511055,0,0,0 -cf_ymin -0.5984 "
+         "-cf_ymax 0.5984 -ksp_rtol 1e-12", 1),
+    ],
+}
+
 CATEGORIES = ["correctness", "performance", "code_quality", "algorithm", "petsc"]
 WEIGHTS = {"correctness": 0.35, "performance": 0.15, "code_quality": 0.15,
            "algorithm": 0.15, "petsc": 0.20}
 
-GATES = ["compiles", "runs_without_error", "produces_output", "uses_petsc"]
-METRICS = ["wall_time", "iteration_count", "memory_footprint"]
-QUALITY = ["readability", "code_style", "documentation", "error_handling",
-           "parallel_awareness", "algorithm_appropriateness", "solver_choice",
+# Evaluator names as the harness records them, so a demo drill-down reads like
+# a real one and a failed execution gate names the evaluator that fails.
+GATES = ["compilation", "execution", "memory_safety", "api_usage"]
+METRICS = ["numerical_accuracy", "execution_time"]
+QUALITY = ["error_handling", "parallel_awareness", "readability", "code_style",
+           "documentation", "algorithm_appropriateness", "solver_choice",
            "petsc_best_practices"]
 
 SEGFAULT = """[0]PETSC ERROR: ------------------------------------------------------------------------
@@ -161,34 +187,96 @@ def build(out_dir: Path, seed: int) -> int:
                 sources = []
                 for problem, pid, difficulty in PROBLEMS:
                     latent = difficulty + effect + judge_shift + rng.gauss(0, 0.045)
-                    aborts = rng.random() > min(0.97, latent + 0.22)
+                    declared = CASES[problem]
+                    fails = rng.random() > min(0.97, latent + 0.22)
 
-                    if aborts:
-                        roll = rng.random()
-                        if roll < 0.42:
-                            compiles, err = False, COMPILE_ERR
-                        elif roll < 0.78:
-                            compiles, err = True, PETSC_ERR
-                        else:
-                            compiles, err = True, SEGFAULT
+                    # A failure is one of two kinds, and they reach the
+                    # dashboard by different routes. A compile failure throws
+                    # out of the harness, so the record carries an error string,
+                    # null evaluation details and no cases. A runtime failure
+                    # does not throw any more: the case is recorded, the
+                    # execution gate fails on it, and the composite is zeroed by
+                    # rule with no error text anywhere.
+                    if fails and rng.random() < 0.42:
                         results.append({
                             "problem_id": pid,
                             "problem_name": problem,
                             "composite_score": 0.0,
                             "tier": "FAIL",
-                            "compiles": compiles,
+                            "compiles": False,
                             "runs": False,
                             "category_scores": {},
-                            "cli_args": "-ts_type rk -ts_max_time 1.0",
+                            "cli_args": declared[0][0],
+                            "cases": [],
                             "time_used_sec": round(rng.uniform(40, 260), 2),
                             "execution_time_sec": 0.0,
                             "total_tokens": int(rng.uniform(9000, 46000) * (n_sub ** 0.5)),
                             "evaluation_summary": {
                                 "gates_passed": None,
                                 "gates_total": None,
-                                "error": err,
+                                "error": COMPILE_ERR,
                             },
                             "evaluation_details": None,
+                        })
+                        continue
+
+                    # Which case breaks is not uniform: the later GradShafranov
+                    # cases are the stiff ones, so a run that gets anywhere
+                    # usually dies late rather than on case 0.
+                    broken = rng.choice(declared[len(declared) // 2:]) if fails else None
+                    cases = []
+                    for i, (args, nsize) in enumerate(declared):
+                        ok = (args, nsize) != broken
+                        cases.append({
+                            "index": i,
+                            "args": args,
+                            "nsize": nsize,
+                            "runs": ok,
+                            "stdout": "",
+                            "stderr": "" if ok else (SEGFAULT if rng.random() < 0.38
+                                                     else PETSC_ERR),
+                            "execution_time_sec": round(rng.uniform(0.1, 9.0), 3) if ok else None,
+                            "valgrind_output": None,
+                        })
+
+                    if fails:
+                        # Gates run first and a failure stops the pipeline, so
+                        # the record holds gate rows only and no categories.
+                        bad = next(c for c in cases if not c["runs"])
+                        gate_rows = []
+                        for g in GATES:
+                            if g == "execution":
+                                head = bad["stderr"].splitlines()[1][:120]
+                                gate_rows.append({
+                                    "name": g, "type": "gate", "method": "deterministic",
+                                    "passed": False, "score": None, "confidence": 1.0,
+                                    "feedback": f"Execution failed on case {bad['index']}: {head}",
+                                })
+                            else:
+                                gate_rows.append({
+                                    "name": g, "type": "gate", "method": "deterministic",
+                                    "passed": True, "score": None, "confidence": 1.0,
+                                    "feedback": f"{g}: ok",
+                                })
+                        results.append({
+                            "problem_id": pid,
+                            "problem_name": problem,
+                            "composite_score": 0.0,
+                            "tier": "FAIL",
+                            "compiles": True,
+                            "runs": False,
+                            "category_scores": {},
+                            "cli_args": cases[0]["args"],
+                            "cases": cases,
+                            "time_used_sec": round(rng.uniform(40, 260), 2),
+                            "execution_time_sec": cases[0]["execution_time_sec"] or 0.0,
+                            "total_tokens": int(rng.uniform(9000, 46000) * (n_sub ** 0.5)),
+                            "evaluation_summary": {
+                                "gates_passed": len(GATES) - 1,
+                                "gates_total": len(GATES),
+                                "error": None,
+                            },
+                            "evaluation_details": gate_rows,
                         })
                         continue
 
@@ -225,9 +313,13 @@ def build(out_dir: Path, seed: int) -> int:
                         "compiles": True,
                         "runs": True,
                         "category_scores": cats,
-                        "cli_args": "-ts_type rk -ts_max_time 1.0 -ksp_type gmres",
+                        "cli_args": cases[0]["args"],
+                        "cases": cases,
                         "time_used_sec": round(rng.uniform(55, 340), 2),
-                        "execution_time_sec": round(rng.uniform(0.1, 9.0), 3),
+                        # The scalar keeps its harness meaning, the runtime of
+                        # the first case. Cases of different sizes have no
+                        # meaningful mean.
+                        "execution_time_sec": cases[0]["execution_time_sec"],
                         "total_tokens": int(rng.uniform(12000, 52000) * (n_sub ** 0.5)),
                         "evaluation_summary": {
                             "gates_passed": 4, "gates_total": 4, "error": None,

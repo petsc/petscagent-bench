@@ -49,10 +49,13 @@ function click(id, i, ev) { reg[id].children[i].dispatch("click", ev); }
 
 check("initial");
 
-// Judge filter.
-click("judgeseg", 1); check("judge = first");
-click("judgeseg", 2); check("judge = second");
-click("judgeseg", 0); check("judge = both");
+// Judge filter. The segment is one button per judge plus "both", so its length
+// follows the data: a single-judge set has two buttons, not three. Walking it
+// rather than clicking fixed indices keeps the driver working on whatever is
+// currently in output/.
+const judgeseg = reg.judgeseg.children;
+for (let i = 1; i < judgeseg.length; i++) { click("judgeseg", i); check("judge = " + i); }
+click("judgeseg", 0); check("judge = all");
 
 // Grid measure: score, ran, and one entry per scoring category. Every one of
 // them has to redraw the grid without emptying it.

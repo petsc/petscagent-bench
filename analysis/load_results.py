@@ -10,8 +10,10 @@ contrasts along one factor rather than a ranking of the whole set. Everything
 downstream -- the contrast plot, the facet choice, the color budget -- reads
 those factors rather than parsing a display name.
 
-Result files that predate the factor fields are still loaded; they are read as
-single-agent, no-skill variants so the old and new runs sit on one axis.
+Result files that carry no factor block are still loaded, under the flat model
+tag the run recorded, so old and new runs sit on one axis. Their factors are
+marked unrecorded rather than guessed, which costs those arms their one-factor
+contrasts and is the honest price of not knowing.
 """
 
 from __future__ import annotations
@@ -43,9 +45,18 @@ MODEL_LABELS = {
     "openai/gemini25pro": "Gemini 2.5 Pro",
 }
 
+# Scaffold level for a run whose configuration was never recorded. The green
+# agent writes an empty `purple_model` whenever it evaluates an already-running
+# agent, because `launcher.py` fills that tag in only for a purple it starts
+# itself. Such a run is identified by the name the agent reported for itself,
+# and a name does not say how the agent is built: `pdesim-<model>-c<N>` is a
+# composite. Reading it as a single agent would be a claim the file never made.
+UNRECORDED = "unrecorded"
+
 SCAFFOLD_LABELS = {
     "single": "Single agent",
     "multiagent": "Multi-agent",
+    UNRECORDED: "scaffold not recorded",
 }
 
 # Compact forms for axis ticks and heatmap headers, where the full label would
@@ -59,6 +70,7 @@ MODEL_SHORT = {
 SCAFFOLD_SHORT = {
     "single": "single",
     "multiagent": "multi",
+    UNRECORDED: "scaffold ?",
 }
 
 # Categories and weights, mirrored from config/green_agent_config.yaml. Kept here
@@ -110,10 +122,13 @@ class Variant:
         """
         # The scaffold is always named, including the control level. Dropping it
         # leaves the baseline reading as a bare model name, which in a drill-down
-        # header is indistinguishable from the judge.
-        parts = [label_for(self.base_model), SCAFFOLD_LABELS.get(self.scaffold, self.scaffold)]
-        if self.n_subagents > 1:
-            parts[-1] += f" ×{self.n_subagents}"
+        # header is indistinguishable from the judge. The exception is a run that
+        # never recorded one, where the name is all there is to print.
+        parts = [label_for(self.base_model)]
+        if self.scaffold != UNRECORDED:
+            parts.append(SCAFFOLD_LABELS.get(self.scaffold, self.scaffold))
+            if self.n_subagents > 1:
+                parts[-1] += f" ×{self.n_subagents}"
         if self.skills:
             parts.append("+skills")
         return " · ".join(parts)
@@ -158,8 +173,12 @@ class Variant:
 def _parse_variant(doc: dict) -> Variant | None:
     """Read the purple configuration from a result document.
 
-    Accepts the factor block when present and falls back to the flat
-    `purple_model` tag, which is read as a single agent with no skills.
+    Accepts the factor block when present. Failing that it takes a flat tag,
+    preferring the configured `purple_model` and falling back to the
+    `reported_model` the agent gave for itself, which is the only identity a
+    run against an already-running purple carries. A flat tag names the arm but
+    does not describe it, so the factors around it are left at `UNRECORDED`
+    rather than invented; see the note on that constant.
     """
     purple = doc.get("purple")
     if isinstance(purple, dict) and purple.get("base_model"):
@@ -171,10 +190,10 @@ def _parse_variant(doc: dict) -> Variant | None:
         )
         return Variant(vid, scaffold, purple["base_model"], skills, n_sub)
 
-    tag = doc.get("purple_model")
+    tag = doc.get("purple_model") or doc.get("reported_model")
     if not tag:
         return None
-    return Variant(f"single-{tag}", "single", tag, (), 1)
+    return Variant(f"tag-{tag}", UNRECORDED, tag, (), 1)
 
 
 @dataclass
@@ -197,6 +216,28 @@ class SourceFile:
     filename: str
     sha256: str
     text: str
+
+
+@dataclass
+class Case:
+    """One invocation of the compiled binary.
+
+    A problem declares its own test cases and the harness runs each with its own
+    arguments and rank count, so GradShafranov is six invocations rather than
+    one. The execution gate fails the whole run when any single case fails,
+    which makes a zero score unreadable unless the failing case can be named.
+
+    Runs made before the harness ran every case carry no `cases` block and load
+    with an empty list, which the dashboard reports as unrecorded rather than as
+    a run with no invocations.
+    """
+
+    index: int
+    args: str
+    nsize: int
+    runs: bool
+    stderr: str
+    execution_time_sec: float | None
 
 
 @dataclass
@@ -223,6 +264,7 @@ class Record:
     petsc_rev: str = ""
     error: str = ""
     evaluations: list[Evaluation] = field(default_factory=list)
+    cases: list[Case] = field(default_factory=list)
     sources: list[SourceFile] = field(default_factory=list)
     source_file: str = ""
 
@@ -235,14 +277,29 @@ class Record:
     def aborted(self) -> bool:
         """True when the run threw before any evaluator could score it.
 
-        A zero composite score never comes from the gate short-circuit in
-        `aggregation.py`. In every zero-scoring record the harness instead caught
-        an exception while building or running the code, wrote the message to
-        `evaluation_summary.error`, and left `evaluation_details` null. So a zero
-        means "never evaluated", not "evaluated and judged worthless" -- which is
-        why the zeros must not be averaged in with real scores.
+        The harness caught an exception while building or running the code,
+        wrote the message to `evaluation_summary.error`, and left
+        `evaluation_details` null. The zero that follows is the absence of a
+        verdict rather than one, which is why these must not be averaged in
+        with real scores.
         """
         return bool(self.error)
+
+    @property
+    def gate_failed(self) -> bool:
+        """True when the evaluators ran and a gate failed, scoring the run zero.
+
+        The other way to score zero, and a different thing from `aborted`. A
+        failing test case no longer propagates out of the harness: the case is
+        recorded, the execution gate fails on it, and `aggregation.py`
+        short-circuits the composite to zero with no error text. So this zero IS
+        a verdict, reached on evidence that lives in `cases` and in the gate's
+        feedback rather than in a stack dump.
+
+        Runs made before the harness ran every declared case cannot be in this
+        state, because a failing case threw instead of being scored.
+        """
+        return not self.error and self.gates_total > 0 and self.gates_passed < self.gates_total
 
     @property
     def failure_class(self) -> str:
@@ -255,6 +312,12 @@ class Record:
         """
         if not self.error:
             return ""
+        # Nothing reached the compiler: the purple's reply held no code the
+        # harness could extract. It arrives with compiles false like a real
+        # compile failure, and calling it one blames the wrong stage and hides
+        # the only failure mode the benchmark cannot blame on PETSc.
+        if "parse purple agent response" in self.error:
+            return "No code produced"
         if not self.compiles:
             return "Compile failure"
         if "SEGV" in self.error or "Segmentation Violation" in self.error:
@@ -274,7 +337,11 @@ class Record:
 # cannot be re-stepped, so the separation has to come from the order instead.
 # This one clears the CVD and normal-vision gates on both surfaces; verify with
 #   node scripts/validate_palette.js "#0ca30c,#fab219,#d03b3b,#ec835a" --mode light
-FAILURE_CLASSES = ("Compile failure", "Segfault", "PETSc runtime error", "Nonzero exit", "Other")
+# "No code produced" leads because it is a different stage rather than a
+# severity step: it is the one mode where the harness never got as far as the
+# compiler, so it sits outside the ordering the rest of this list encodes.
+FAILURE_CLASSES = ("No code produced", "Compile failure", "Segfault",
+                   "PETSc runtime error", "Nonzero exit", "Other")
 
 
 def _result_files(dirs: Sequence[Path] | None = None) -> list[Path]:
@@ -301,6 +368,27 @@ def _parse_evaluations(raw: Any) -> list[Evaluation]:
                 score=e.get("score"),
                 confidence=e.get("confidence"),
                 feedback=e.get("feedback") or "",
+            )
+        )
+    return out
+
+
+def _parse_cases(raw: Any) -> list[Case]:
+    # Absent on every run made before the harness ran each declared case, and
+    # on a run that never compiled. Both read as "no invocations recorded".
+    if not raw:
+        return []
+    out = []
+    for i, c in enumerate(raw):
+        runtime = c.get("execution_time_sec")
+        out.append(
+            Case(
+                index=int(c.get("index", i)),
+                args=c.get("args") or "",
+                nsize=int(c.get("nsize") or 1),
+                runs=bool(c.get("runs")),
+                stderr=c.get("stderr") or "",
+                execution_time_sec=float(runtime) if runtime is not None else None,
             )
         )
     return out
@@ -400,7 +488,10 @@ def load_records(
                     gates_passed=int(summary.get("gates_passed") or 0),
                     gates_total=int(summary.get("gates_total") or 0),
                     categories=dict(r.get("category_scores") or {}),
-                    cli_args=r.get("cli_args") or "",
+                    # A run with no arguments records a blank or a single
+                    # space. Stripping it keeps the drill-down from showing an
+                    # empty argument box that looks like missing data.
+                    cli_args=(r.get("cli_args") or "").strip(),
                     wall_time_sec=float(r.get("time_used_sec") or 0.0),
                     execution_time_sec=float(r.get("execution_time_sec") or 0.0),
                     total_tokens=r.get("total_tokens"),
@@ -408,6 +499,7 @@ def load_records(
                     petsc_rev=str(env.get("petsc_rev") or ""),
                     error=str(summary.get("error") or ""),
                     evaluations=_parse_evaluations(r.get("evaluation_details")),
+                    cases=_parse_cases(r.get("cases")),
                     sources=sources.get(problem, []),
                     source_file=_display_path(path),
                 )
