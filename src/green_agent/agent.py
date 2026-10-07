@@ -40,7 +40,7 @@ from src.util.telemetry import (
 )
 from pathlib import Path
 
-from dataclasses import dataclass, asdict, field
+from dataclasses import dataclass, asdict, field, fields
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 import dotenv
@@ -398,6 +398,8 @@ class BenchmarkResult:
     evaluation_details: Optional[List[Dict[str, Any]]] = None
     scored_at: Optional[str] = None     # UTC ISO 8601, one value per pass
     scored_by: Optional[str] = None     # the judge model that scored it
+    # Held per record as well, because a narrowed run writes no aggregate.
+    pass_index: Optional[int] = None
 
 
 def _derive_summary(results: List["BenchmarkResult"]) -> Dict[str, Any]:
@@ -413,6 +415,58 @@ def _derive_summary(results: List["BenchmarkResult"]) -> Dict[str, Any]:
         "avg_composite_score": None,
         "tier_distribution": tiers,
     }
+
+
+def _summarize(
+    results: List["BenchmarkResult"], efficiency_config: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
+    """The summary block of an aggregate, over the results it will hold.
+
+    Shared with `compose`, so a composed summary cannot drift from a run's.
+    """
+    summary = _derive_summary(results)
+
+    times = [
+        r.purple_wall_time_sec
+        for r in results
+        if not r.purple_response_replayed and r.purple_wall_time_sec is not None
+    ]
+    summary["avg_purple_wall_time_sec"] = (
+        sum(times) / len(times) if times else None
+    )
+
+    scores = [r.composite_score for r in results if r.composite_score is not None]
+    summary["avg_composite_score"] = (sum(scores) / len(scores)) if scores else None
+
+    # Token cost of code generation across the suite (metadata only).
+    # prompt=input, completion=output, cached=prompt tokens served from cache.
+    live_results = [r for r in results if not r.purple_response_replayed]
+    summary["total_prompt_tokens"] = sum(r.prompt_tokens or 0 for r in live_results)
+    summary["total_completion_tokens"] = sum(r.completion_tokens or 0 for r in live_results)
+    summary["total_tokens"] = sum(r.total_tokens or 0 for r in live_results)
+    summary["total_cached_tokens"] = sum(r.cached_tokens or 0 for r in live_results)
+    summary["purple_efficiency"] = _purple_efficiency_summary(
+        results, efficiency_config or {}
+    )
+    return summary
+
+
+def _result_from_record(record: Dict[str, Any]) -> "BenchmarkResult":
+    """Rebuild a BenchmarkResult from a record read back off disk.
+
+    Keys this checkout has retired would otherwise be rejected by the
+    constructor. Dropping them is safe only because the caller writes the
+    record dicts themselves, not what comes back from here.
+    """
+    def _build(cls, data):
+        known = {f.name for f in fields(cls)}
+        return cls(**{k: v for k, v in data.items() if k in known})
+
+    record = dict(record)
+    cases = record.pop("cases", None) or []
+    result = _build(BenchmarkResult, record)
+    result.cases = [_build(TestCaseResult, c) for c in cases]
+    return result
 
 
 class Agent:
@@ -778,6 +832,7 @@ class Agent:
                 # instead of leaving the field null.
                 scored_at=pass_stamp,
                 scored_by=self.model,
+                pass_index=self.pass_index,
             )
             generated_sources = []
 
@@ -916,30 +971,7 @@ class Agent:
             await self.mcp_client.finalize()
             mcp_initialized = False
 
-        summary = _derive_summary(results)
-
-        # Final summary artifact
-        times = [
-            r.purple_wall_time_sec
-            for r in results
-            if not r.purple_response_replayed and r.purple_wall_time_sec is not None
-        ]
-        summary["avg_purple_wall_time_sec"] = (
-            sum(times) / len(times) if times else None
-        )
-
-        # Calculate average evaluation score
-        scores = [r.composite_score for r in results if r.composite_score is not None]
-        summary["avg_composite_score"] = (sum(scores) / len(scores)) if scores else None
-
-        # Token cost of code generation across the suite (metadata only).
-        # prompt=input, completion=output, cached=prompt tokens served from cache.
-        live_results = [r for r in results if not r.purple_response_replayed]
-        summary["total_prompt_tokens"] = sum(r.prompt_tokens or 0 for r in live_results)
-        summary["total_completion_tokens"] = sum(r.completion_tokens or 0 for r in live_results)
-        summary["total_tokens"] = sum(r.total_tokens or 0 for r in live_results)
-        summary["total_cached_tokens"] = sum(r.cached_tokens or 0 for r in live_results)
-        summary["purple_efficiency"] = _purple_efficiency_summary(
+        summary = _summarize(
             results, self.config.get("scoring", {}).get("efficiency", {})
         )
 
@@ -964,15 +996,36 @@ class Agent:
         # overwrites the two trees. A rescore writes the copy --pass names, so
         # it never lands on the run it is replaying.
         suffix = f"-s{self.pass_index}" if self.pass_index else ""
-        local_path = output_dir / f"{prefix}{suffix}.json"
+        aggregate_name = f"{prefix}{suffix}.json"
+        # A narrowed live run writes none, rather than replace a file holding
+        # problems it never scored, and composes one from the tree instead. A
+        # narrowed rescore keeps its -sN name, which cannot land on a file
+        # holding more than it.
+        narrowed = bool(self.problems) and self.replay_index is None
+        local_path = None if narrowed else output_dir / aggregate_name
 
         local_path, json_data = self._write_aggregate(
             results, summary, pass_stamp,
             local_path, code_dir, scores_dir, self.pass_index, reported_model,
         )
-        print(f"@@@ Green agent: Saved results to {local_path}")
+        if local_path is not None:
+            print(f"@@@ Green agent: Saved results to {local_path}")
+        else:
+            # Only this variant and judge, so a narrowed run never rewrites an
+            # aggregate it has nothing to do with.
+            from src.green_agent.compose import compose_variant
+            composed = compose_variant(
+                output_dir, variant, self.model,
+                self.config.get("scoring", {}).get("efficiency", {}),
+                identity=(self.purple_id, self.purple_model),
+            )
+            print(
+                f"@@@ Green agent: Narrowed to '{self.problems}', so "
+                f"{composed} was composed from every problem in {scores_dir}, "
+                f"not just the ones this run scored."
+            )
         await updater.add_artifact(
-            name=local_path.name,
+            name=aggregate_name,
             parts=[new_text_part(json.dumps(json_data, indent=2))],
             metadata=summary,
         )
@@ -995,10 +1048,12 @@ class Agent:
     ):
         """Write the pass's aggregate JSON, its code tree and its score tree.
 
-        `pass_index` is None for a live run.
+        `pass_index` is None for a live run. `local_path` is None for a
+        narrowed live run, which writes the two trees but no aggregate. The
+        JSON is built and returned either way, so the pass is still reported.
 
         Returns:
-            (path, json_data) for the caller to report and attach.
+            (path or None, json_data) for the caller to report and attach.
         """
         # Built once so the aggregate and the per-problem files below hold the
         # same data. They are indented differently, being at different depths.
@@ -1018,14 +1073,15 @@ class Agent:
             # It holds the latest generation rather than this pass's, which
             # the records below carry in full.
             "submissions": f"code/{code_dir.name}",
-            # Null for a full run. Never set on a rescore, which always
-            # sweeps the whole recorded set.
+            # Set only in a narrowed rescore's -sN file. A narrowed live run
+            # writes no aggregate, so it survives on the reported artifact.
             "problem_filter": self.problems,
             "scored_at": pass_stamp,
             "summary": summary,
             "results": records,
         }
-        local_path.write_text(json.dumps(json_data, indent=2))
+        if local_path is not None:
+            local_path.write_text(json.dumps(json_data, indent=2))
         code_dir.mkdir(parents=True, exist_ok=True)
         # A rescore replays code an earlier run generated, so writing it would
         # put an old generation over whatever the tree holds now. It leaves the
@@ -1086,6 +1142,8 @@ class Agent:
 
         The judge is in the filename because the tree is shared, so a second
         judge does not overwrite the first.
+
+        A narrowed run leaves nothing else, so `compose` reads this tree back.
         """
         judge_slug = _name_slug(self.model)
         for result, record in zip(results, records):

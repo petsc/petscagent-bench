@@ -1,22 +1,25 @@
 """CLI entry point for the PETSc Agent Benchmark system.
 
 This module provides the command-line interface for running the agentified
-petscagent-bench framework. It supports four main commands:
+petscagent-bench framework. It supports five main commands:
 - green: Start the assessment manager agent (Green Agent)
 - purple: Start the target agent being tested (Purple Agent)
 - launch: Run the complete evaluation workflow
+- aggregate: Compose a results aggregate from a directory's per-problem scores
 - problems: List the benchmark problems, or preview a selection
 
 The system uses the A2A (Agent-to-Agent) protocol and MCP (Model Context Protocol)
 for inter-agent communication and tool access.
 """
 
+import json
 import typer
 import asyncio
 from pathlib import Path
 
-from src.green_agent.server import start_green_agent
+from src.green_agent.server import start_green_agent, load_green_agent_config
 from src.green_agent.agent import read_from_json, select_problems
+from src.green_agent.compose import compose
 from src.purple_agent.petsc_agent import start_purple_agent
 from src.launcher import launch_evaluation
 
@@ -118,6 +121,42 @@ def launch(
     asyncio.run(launch_evaluation(purple_url=purple_url, replay=replay,
                                   problems=problems, pass_index=pass_index,
                                   output=output))
+
+
+@app.command()
+def aggregate(
+    directory: str = typer.Argument(
+        None, help="A results directory holding a scores/ tree. Defaults to "
+                   "the output_dir in config/green_agent_config.yaml."),
+    judge: str = typer.Option(
+        None, help="Compose only this judge's aggregates. All of them by "
+                   "default."),
+):
+    """Compose each variant's aggregate JSON from its per-problem scores.
+
+    A live run narrowed with --problems composes its own, so this is for
+    gathering up a tree by hand, after a rescore or across variants.
+
+        main.py aggregate                 the configured output directory
+        main.py aggregate output_darcy    somewhere else
+    """
+    config = load_green_agent_config()
+    root = Path(directory or config.get("output_dir") or "output")
+    try:
+        written = compose(
+            root, judge,
+            config.get("scoring", {}).get("efficiency", {}),
+        )
+    except FileNotFoundError as e:
+        typer.echo(str(e), err=True)
+        raise typer.Exit(code=1)
+
+    for path in written:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        typer.echo(f"{path}  {data['summary']['total']} problems")
+    if not written:
+        typer.echo(f"No scores to compose under {root / 'scores'}.", err=True)
+        raise typer.Exit(code=1)
 
 
 @app.command()

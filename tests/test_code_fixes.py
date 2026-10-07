@@ -754,6 +754,62 @@ class WhatALaterPassMayOverwriteTest(unittest.TestCase):
             )
 
 
+class ANarrowedRunLeavesTheAggregateAloneTest(unittest.TestCase):
+    """Two runs narrowed to different problems used to leave one result."""
+
+    def write(self, out, names, judge="j", problems=None):
+        from src.green_agent.agent import Agent, BenchmarkResult, _summarize
+
+        agent = Agent.__new__(Agent)
+        agent.purple_id, agent.purple_model, agent.model = "p", "tag", judge
+        agent.problems = problems
+        agent.replay_index = None
+        # Scores follow the problem, so the halves and the whole compare equal.
+        results = [BenchmarkResult(
+            problem_name=name, problem_id=pid, runs=True, compiles=True,
+            composite_score=float(pid), tier="GOLD", scored_at="t",
+            scored_by=judge, prompt_tokens=10, purple_wall_time_sec=2.0,
+            generated_sources=[{"original_name": f"{name}.c",
+                                "server_name": f"{name}.c",
+                                "source": f"/* {name} */", "sha256": "x"}],
+        ) for pid, name in names]
+        return agent._write_aggregate(
+            results, _summarize(results, {}), "t",
+            None if problems else out / f"tag-judged-by-{judge}.json",
+            out / "code" / "tag", out / "scores" / "tag", None, None,
+        )
+
+    def test_narrowed_runs_write_only_trees_and_compose_back_to_a_full_run(self):
+        import json
+        import tempfile
+        from pathlib import Path
+
+        from src.green_agent.compose import compose
+
+        with tempfile.TemporaryDirectory() as a, tempfile.TemporaryDirectory() as b:
+            split, whole = Path(a), Path(b)
+            local_path, json_data = self.write(
+                split, [("1", "alpha")], problems="alpha")
+            self.assertIsNone(local_path)
+            self.assertEqual(json_data["problem_filter"], "alpha")
+            self.assertEqual(list(split.glob("*.json")), [])
+            self.assertTrue((split / "code/tag/alpha/alpha.c").is_file())
+            self.assertTrue((split / "scores/tag/alpha/judged-by-j.json").is_file())
+
+            self.write(split, [("2", "beta")], problems="beta")
+            written = compose(split, efficiency_config={})
+            self.assertEqual([p.name for p in written], ["tag-judged-by-j.json"])
+
+            self.write(whole, [("1", "alpha"), ("2", "beta")])
+            composed = json.loads(written[0].read_text())
+            full = json.loads((whole / "tag-judged-by-j.json").read_text())
+            self.assertEqual(composed["summary"], full["summary"])
+            self.assertEqual([r["problem_name"] for r in composed["results"]],
+                             [r["problem_name"] for r in full["results"]])
+            self.assertIsNone(composed["pass_index"])
+            self.assertIsNone(composed["problem_filter"])
+
+
 class TheCodeTreeHoldsTheLatestGenerationTest(unittest.TestCase):
     """What a later run is allowed to do to the tree it finds.
 
