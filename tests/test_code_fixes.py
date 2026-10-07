@@ -568,5 +568,25 @@ class CodeFixTests(unittest.TestCase):
         self.assertEqual(agent.mcp_client.calls[0]["filename"], "helper.h")
 
 
+class DerivedSummaryTest(unittest.TestCase):
+    """The counters must agree with the results list they describe."""
+
+    def summarize(self, *specs):
+        from src.green_agent.agent import BenchmarkResult, _derive_summary
+
+        return _derive_summary([
+            BenchmarkResult(problem_name=n, problem_id=n, runs=runs,
+                            compiles=True, tier=tier)
+            for n, runs, tier in specs
+        ])
+
+    def test_every_record_is_counted(self):
+        s = self.summarize(("a", True, "GOLD"), ("b", True, "SILVER"),
+                           ("c", False, "FAIL"))
+        self.assertEqual(s["total"], 3)
+        self.assertEqual(s["runs_count"], 2)
+        self.assertEqual(s["failure_count"], 1)
+
+
 if __name__ == "__main__":
     unittest.main()

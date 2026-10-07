@@ -24,6 +24,7 @@ import hashlib
 import math
 import numbers
 import statistics
+from collections import Counter
 from a2a.server.tasks import TaskUpdater
 from src.util.a2a_v1 import (
     Message, TaskState, StreamResponse, get_data, get_text_parts, get_file_parts,
@@ -396,6 +397,21 @@ class BenchmarkResult:
     evaluation_details: Optional[List[Dict[str, Any]]] = None
 
 
+def _derive_summary(results: List["BenchmarkResult"]) -> Dict[str, Any]:
+    """Count the run's outcomes from the list that gets written."""
+    counts = Counter(r.tier for r in results)
+    tiers = {t: counts.get(t, 0) for t in ("GOLD", "SILVER", "BRONZE", "FAIL")}
+    runs_count = sum(1 for r in results if r.runs)
+    return {
+        "total": len(results),
+        "runs_count": runs_count,
+        "failure_count": len(results) - runs_count,
+        "avg_purple_wall_time_sec": None,
+        "avg_composite_score": None,
+        "tier_distribution": tiers,
+    }
+
+
 class Agent:
     """
     This class represents a green agent that manages assessment and evaluation of test tasks.
@@ -674,14 +690,6 @@ class Agent:
         Use send_message(message, url) to call participant agents.
         """
         results: List[BenchmarkResult] = []
-        summary: Dict[str, Any] = {
-            "total": 0,
-            "runs_count": 0,
-            "failure_count": 0,
-            "avg_purple_wall_time_sec": None,
-            "avg_composite_score": None,
-            "tier_distribution": {"GOLD": 0, "SILVER": 0, "BRONZE": 0, "FAIL": 0},
-        }
 
         # input_text = get_message_text(message)
         data_file_path = Path("./data")
@@ -819,14 +827,6 @@ class Agent:
                 # Run evaluation system
                 print(f"@@@ Green agent: Evaluating generated code...")
                 await self._evaluate_code(br, data, generated_sources)
-                # Update rolling summary
-                if br.runs:
-                    summary["runs_count"] += 1
-                else:
-                    summary["failure_count"] += 1
-                # Update evaluation summary
-                if br.tier:
-                    summary["tier_distribution"][br.tier] += 1
                 br.efficiency_score = _calculate_efficiency_score(
                     br, self.config.get("scoring", {}).get("efficiency", {})
                 )
@@ -845,16 +845,15 @@ class Agent:
                 br.efficiency_score = _calculate_efficiency_score(
                     br, self.config.get("scoring", {}).get("efficiency", {})
                 )
-                summary["failure_count"] += 1
-                summary["tier_distribution"]["FAIL"] += 1
 
             finally:
-                summary["total"] += 1
                 results.append(br)
 
         if mcp_initialized:
             await self.mcp_client.finalize()
             mcp_initialized = False
+
+        summary = _derive_summary(results)
 
         # Final summary artifact
         times = [
@@ -921,6 +920,41 @@ class Agent:
                 # the loop cannot spin.
                 continue
 
+        local_path, json_data = self._write_aggregate(
+            results, summary,
+            output_dir, run_dir, prefix, run_index, reported_model,
+        )
+        print(f"@@@ Green agent: Saved results to {local_path}")
+        await updater.add_artifact(
+            name=local_path.name,
+            parts=[new_text_part(json.dumps(json_data, indent=2))],
+            metadata=summary,
+        )
+
+        # Create evaluation summary report
+        await self._create_evaluation_report(results, summary, updater)
+
+        await updater.update_status(
+            TaskState.TASK_STATE_COMPLETED,
+            new_agent_text_message(
+                f"Done. {summary['runs_count']}/{summary['total']} succeeded. "
+                f"Avg score: {summary.get('avg_composite_score', 0):.1f}/100"
+            ),
+        )
+
+    def _write_aggregate(
+        self, results, summary,
+        output_dir, run_dir, prefix, run_index, reported_model,
+    ):
+        """Write the run's aggregate JSON and its run tree.
+
+        The run index and directory are decided by the caller, because
+        allocating them is what settles a race between two runs finishing at
+        once.
+
+        Returns:
+            (path, json_data) for the caller to report and attach.
+        """
         local_path = output_dir / f"{prefix}-run{run_index}.json"
         # Built once so the aggregate and the per-problem files below hold the
         # same data. They are indented differently, being at different depths.
@@ -960,23 +994,7 @@ class Agent:
         (run_dir / "manifest.json").write_text(
             json.dumps(source_manifest, indent=2), encoding="utf-8"
         )
-        print(f"@@@ Green agent: Saved results to {local_path}")
-        await updater.add_artifact(
-            name=local_path.name,
-            parts=[new_text_part(json.dumps(json_data, indent=2))],
-            metadata=summary,
-        )
-
-        # Create evaluation summary report
-        await self._create_evaluation_report(results, summary, updater)
-
-        await updater.update_status(
-            TaskState.TASK_STATE_COMPLETED,
-            new_agent_text_message(
-                f"Done. {summary['runs_count']}/{summary['total']} succeeded. "
-                f"Avg score: {summary.get('avg_composite_score', 0):.1f}/100"
-            ),
-        )
+        return local_path, json_data
 
     async def _evaluate_code(
         self,
