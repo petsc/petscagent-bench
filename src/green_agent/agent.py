@@ -431,15 +431,6 @@ class Agent:
         self.max_num_prob = max_num_prob
         # Comma-separated terms narrowing the problem set, None for all of it.
         self.problems = problems
-        if replay_path and problems:
-            # A rescore must cover the whole recorded set. Scoring a subset
-            # would write a file holding only those problems, and replay
-            # reads submissions from the file rather than the tree, so the
-            # ones left out could never be rescored again.
-            raise ValueError(
-                "--problems cannot be combined with --replay: a rescore "
-                "always sweeps the whole recorded run"
-            )
         # Which numbered aggregate a rescore writes, None for a live run. The
         # number is given rather than derived, so a pass lands where the
         # caller says even if an earlier one was deleted or is still running.
@@ -747,11 +738,13 @@ class Agent:
         if self.replay_index is not None:
             recorded = set(self.replay_index)
             present = {d["problem_name"] for d in selected}
-            if recorded != present:
-                # Neither direction can be scored honestly. A recorded problem
-                # missing from data/ has no specification to grade against, and
-                # a problem only in data/ has no submission to replay and would
-                # otherwise be recorded as a FAIL at zero.
+            # A recorded problem missing from data/ has no specification to
+            # grade against, and a problem only in data/ has no submission to
+            # replay and would otherwise be recorded as a FAIL at zero. A
+            # narrowed rescore asks for a subset, so leaving some of the
+            # recorded set out is what it is for.
+            unasked = set() if self.problems else recorded - present
+            if unasked or present - recorded:
                 raise ValueError(
                     "replay file and data/ disagree, refusing to rescore a "
                     "partial set. Only in the replay file: "

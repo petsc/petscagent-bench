@@ -619,29 +619,11 @@ class FakeUpdater:
 
 
 class ARescoreScoresTheWholeRecordedRunTest(unittest.TestCase):
-    """A rescore has to cover exactly the set the replayed file holds.
+    """An unnarrowed rescore covers exactly the set the replayed file holds.
 
-    Replay reads submissions from the aggregate rather than from the tree, so
-    a pass that wrote back fewer problems than it read would leave the ones it
-    left out with no copy of their code anywhere, and they could never be
-    rescored again.
+    With --problems it covers a subset of it, deliberately, but a problem the
+    file never recorded has no submission to replay in either case.
     """
-
-    def test_narrowing_a_rescore_is_refused_up_front(self):
-        import json
-        import tempfile
-        from pathlib import Path
-        from src.green_agent.agent import Agent
-
-        with tempfile.TemporaryDirectory() as tmp:
-            recorded = Path(tmp) / "recorded.json"
-            recorded.write_text(json.dumps({"results": []}))
-            with self.assertRaises(ValueError) as caught:
-                Agent(config={"evaluation": {"llm": {"model": "none/none"}}},
-                      purple_agent_url="http://purple",
-                      mcp_server_url="http://mcp",
-                      replay_path=str(recorded), problems="alpha")
-        self.assertIn("--problems", str(caught.exception))
 
     def run_against(self, recorded_names, dataset_names):
         import asyncio
