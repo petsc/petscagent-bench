@@ -5,7 +5,7 @@ require(require("path").join(__dirname, "domstub.js"));
 
 const fs = require("fs");
 const html = fs.readFileSync(
-  require("path").join(__dirname, "..", "dashboard_artifact.html"), "utf8");
+  process.argv[2] || require("path").join(__dirname, "..", "dashboard_artifact.html"), "utf8");
 const payload = html.match(
   /<script type="application\/json" id="payload">([\s\S]*?)<\/script>/);
 const main = html.slice(payload.index + payload[0].length).match(/<script>([\s\S]*?)<\/script>/);
@@ -15,8 +15,6 @@ const main = html.slice(payload.index + payload[0].length).match(/<script>([\s\S
 global.document.createDocumentFragment = () => ({
   __frag: true, children: [], appendChild(c) { this.children.push(c); return c; }
 });
-const basePush = Object.getPrototypeOf({});
-global.__spliceFrags = true;
 global.document.createRange = () => ({ selectNodeContents() {} });
 global.window.getSelection = () => ({ removeAllRanges() {}, addRange() {} });
 global.window.innerWidth = 1280;
@@ -125,21 +123,30 @@ if (!reg.runlist.children.length) {
               " runs with source, no cell renders one");
 }
 
-// The metric strip decomposes a run's composite. Its contributions must add to
-// the total it prints, because that row exists to be checked.
-function strips(node, out) {
+// Two claims the detail panel makes about its own arithmetic: the metric strip
+// says its contributions add to the composite, and each evaluator group says
+// its heading is the confidence-weighted mean of the rows beneath it. Both are
+// printed to be checked, so check them. One walk over the cells covers both,
+// capped because every click re-renders the whole panel.
+const CELL_BUDGET = 60;
+function find(node, cls, out) {
   out = out || [];
-  if (node && String(node.className || "").split(" ").includes("metrics")) out.push(node);
-  for (const c of (node && node.children) || []) strips(c, out);
+  if (node && String(node.className || "").split(" ").includes(cls)) out.push(node);
+  for (const c of (node && node.children) || []) find(c, cls, out);
   return out;
 }
-let checked = 0, bad = 0;
-for (let i = 0; i < reg.grid.children.length; i++) {
+const num = (s) => {
+  const m = /score (-?[\d.]+)/.exec(s || ""), c = /conf (-?[\d.]+)/.exec(s || "");
+  return m ? { s: parseFloat(m[1]), c: c ? parseFloat(c[1]) : 1 } : null;
+};
+let checked = 0, bad = 0, gchecked = 0, gbad = 0, cells = 0;
+for (let i = 0; i < reg.grid.children.length && cells < CELL_BUDGET; i++) {
   if (!reg.grid.children[i].dispatch) continue;
   click("grid", i);
-  for (const m of strips(reg.runlist)) {
+  cells++;
+  for (const m of find(reg.runlist, "metrics")) {
     const rows = (m.children || []).filter(
-      (r) => !String(r.className || "").split(" ").some((c) => c === "mhead"));
+      (r) => !String(r.className || "").split(" ").includes("mhead"));
     const total = rows.pop();
     const sum = rows.reduce((a, r) => a + parseFloat(r.children[4].textContent), 0);
     const got = parseFloat(total.children[4].textContent);
@@ -149,29 +156,7 @@ for (let i = 0; i < reg.grid.children.length; i++) {
       if (bad < 4) console.log("     sum " + sum.toFixed(1) + " vs printed " + got.toFixed(1));
     }
   }
-}
-if (!checked) console.log("skip metric strips                   no scored run in any cell");
-else if (bad) { failures++; console.log("FAIL metric strips                   " + bad + " of " + checked + " do not add up"); }
-else console.log("ok   metric strips                   " + checked + " decompositions add up");
-
-// Each evaluator group prints a category score and claims the rows beneath it
-// average to it. Recompute that confidence-weighted mean from the rendered rows
-// so the claim is checked rather than asserted.
-function groups(node, out) {
-  out = out || [];
-  if (node && String(node.className || "").split(" ").includes("evgroup")) out.push(node);
-  for (const c of (node && node.children) || []) groups(c, out);
-  return out;
-}
-const num = (s) => {
-  const m = /score (-?[\d.]+)/.exec(s || ""), c = /conf (-?[\d.]+)/.exec(s || "");
-  return m ? { s: parseFloat(m[1]), c: c ? parseFloat(c[1]) : 1 } : null;
-};
-let gchecked = 0, gbad = 0;
-for (let i = 0; i < reg.grid.children.length; i++) {
-  if (!reg.grid.children[i].dispatch) continue;
-  click("grid", i);
-  for (const g of groups(reg.runlist)) {
+  for (const g of find(reg.runlist, "evgroup")) {
     const head = g.children[0];
     const printed = parseFloat((head.children[1] || {}).textContent);
     if (!Number.isFinite(printed)) continue;      // the gates group carries no score
@@ -183,12 +168,11 @@ for (let i = 0; i < reg.grid.children.length; i++) {
     }
     if (!vals.length) continue;
     const den = vals.reduce((a, v) => a + v.c, 0);
+    // Rows carry the harness scale of [0,1]; the heading is out of 100.
     const mean = vals.reduce((a, v) => a + v.s * v.c, 0) / den * 100;
     gchecked++;
-    // Rows print their score to two decimals, so a mean rebuilt from what is
-    // on screen can sit half a point off a heading computed from full
-    // precision. A row in the wrong group moves it by several points, which is
-    // what this is looking for.
+    // Tolerance covers rounding in the two-decimal rows. A row in the wrong
+    // group moves the mean by several points, which is what this looks for.
     if (Math.abs(mean - printed) > 1.0) {
       gbad++;
       if (gbad < 4) {
@@ -198,9 +182,12 @@ for (let i = 0; i < reg.grid.children.length; i++) {
     }
   }
 }
+if (!checked) console.log("skip metric strips                   no scored run in any cell");
+else if (bad) { failures++; console.log("FAIL metric strips                   " + bad + " of " + checked + " do not add up"); }
+else console.log("ok   metric strips                   " + checked + " decompositions add up");
 if (!gchecked) console.log("skip evaluator groups                no grouped evaluator in any cell");
 else if (gbad) { failures++; console.log("FAIL evaluator groups                " + gbad + " of " + gchecked + " headings disagree with their rows"); }
-else console.log("ok   evaluator groups            " + gchecked + " headings match their rows");
+else console.log("ok   evaluator groups                " + gchecked + " headings match their rows");
 
 console.log(failures ? "\n" + failures + " FAILURES" : "\nall states clean");
 process.exit(failures ? 1 : 0);

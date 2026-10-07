@@ -352,10 +352,8 @@ table.data th .thw {
   const REPLICATES = DATA.replicates || [];
   const CATS = DATA.categories;
   const SEQ = ["--seq-100", "--seq-200", "--seq-300", "--seq-400", "--seq-500", "--seq-600", "--seq-700"];
-  // "PETSc usage" rather than "PETSc practice": the category averages three
-  // evaluators, one of which is named petsc_best_practices and prints a few
-  // rows below it. Two near-identical names beside two different numbers read
-  // as a contradiction.
+  // Labels differ from the evaluator names deliberately: "PETSc usage" over a
+  // row named petsc_best_practices reads as a contradiction when both print.
   const CAT_LABELS = {
     correctness: "Correctness", performance: "Performance", code_quality: "Code quality",
     algorithm: "Algorithm", petsc: "PETSc usage"
@@ -383,9 +381,9 @@ table.data th .thw {
   };
   const mean = (xs) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null);
 
-  // Visible agents, best mean first. The scoreboard, the grid rows and the
+  // Visible variants, best mean first. The scoreboard, the grid rows and the
   // detail panel's default all read this, so the three never disagree about
-  // which agent is on top.
+  // which variant is on top.
   function shown() {
     return VARIANTS.map((_, i) => i).filter((i) => active.has(i)).sort((a, b) => {
       const ma = mean(DATA.rows.filter((r) => r.v === a && inJudge(r)).map((r) => r.s));
@@ -396,11 +394,11 @@ table.data th .thw {
 
   const inJudge = (r) => judge === "all" || JUDGES[r.j].id === judge;
   const slice = () => DATA.rows.filter((r) => active.has(r.v) && inJudge(r));
-  // Rows for one agent on one problem, ignoring the chip filter, because the
-  // detail panel must still fill when its agent has just been hidden.
+  // Rows for one variant on one problem, ignoring the chip filter, because the
+  // detail panel must still fill when its variant has just been hidden.
   const cellRows = (v, p) => DATA.rows.filter((r) => r.v === v && r.p === p && inJudge(r));
 
-  // A submission is one attempt: agent, problem, run index. Two judges score
+  // A submission is one attempt: variant, problem, replicate. Two judges score
   // the same submission, so counting records would double every compile and
   // every execution.
   function submissions(rows) {
@@ -441,7 +439,7 @@ table.data th .thw {
     document.getElementById("tablecard").hidden = !showTable;
     const plural = (n, word) => n + " " + word + (n === 1 ? "" : "s");
     document.getElementById("prov").textContent = [
-      plural(DATA.rows.length, "run"), plural(VARIANTS.length, "agent"),
+      plural(DATA.rows.length, "problem-run"), plural(VARIANTS.length, "variant"),
       plural(PROBLEMS.length, "problem"), plural(JUDGES.length, "judge")
     ].join(" · ");
   }
@@ -457,7 +455,7 @@ table.data th .thw {
       c.setAttribute("aria-pressed", String(active.has(i)));
       c.appendChild(el("span", null, v.short));
       c.appendChild(el("span", "n", String(n)));
-      // An agent that skipped part of the suite cannot be compared on means
+      // A variant that skipped part of the suite cannot be compared on means
       // with one that attempted all of it, so the chip says so rather than
       // leaving the reader to infer it from a gappy grid row.
       if (covered < PROBLEMS.length) {
@@ -491,14 +489,14 @@ table.data th .thw {
       ? (JUDGES.length === 1 ? JUDGES[0].label : "all " + JUDGES.length + " judges")
       : (JUDGES.find((j) => j.id === judge) || {}).label;
     const tiles = [
-      { k: "Runs in view", v: String(rows.length),
-        f: shown().length + " agents · " + jname },
+      { k: "Problem-runs in view", v: String(rows.length),
+        f: shown().length + " variants · " + jname },
       { k: "Submissions that ran", v: subs.length ? pct(ran / subs.length) : "—",
         f: ran + " of " + subs.length },
-      { k: "Mean of scored runs", v: fx(mean(scored.map((r) => r.s)), 1),
+      { k: "Mean of scored problem-runs", v: fx(mean(scored.map((r) => r.s)), 1),
         f: "n = " + scored.length },
       { k: "Reached GOLD", v: String(rows.filter((r) => r.t === "GOLD").length),
-        f: rows.length ? pct(rows.filter((r) => r.t === "GOLD").length / rows.length) + " of runs" : "—" }
+        f: rows.length ? pct(rows.filter((r) => r.t === "GOLD").length / rows.length) + " of problem-runs" : "—" }
     ];
     for (const t of tiles) {
       const d = el("div", "sum");
@@ -513,7 +511,7 @@ table.data th .thw {
   function renderScoreboard() {
     const t = document.getElementById("scoreboard");
     t.replaceChildren();
-    const head = ["Agent", "Problems", "Submissions", "Compiled", "Ran", "Scored"]
+    const head = ["Variant", "Problems", "Submissions", "Compiled", "Ran", "Scored"]
       .concat(JUDGES.map((j) => j.label));
     const thead = el("thead"), hr = el("tr");
     head.forEach((h, i) => {
@@ -551,11 +549,11 @@ table.data th .thw {
       tb.appendChild(tr);
     }
     t.appendChild(tb);
-    if (!order.length) t.appendChild(el("caption", "empty", "No agents selected."));
+    if (!order.length) t.appendChild(el("caption", "empty", "No variants selected."));
   }
 
   /* ---- grid -------------------------------------------------------------- */
-  // One number per agent per problem, in whatever the measure segment selects.
+  // One number per variant per problem, in whatever the measure segment selects.
   // Returns null when the slice holds nothing to average, which the cell draws
   // as an em dash rather than as a zero.
   function cellValue(vi, pi) {
@@ -578,19 +576,19 @@ table.data th .thw {
       "minmax(120px, 1.5fr) repeat(" + PROBLEMS.length + ", minmax(62px, 1fr))";
 
     document.getElementById("gridnote").textContent = measure === "ran"
-      ? "Share of submissions that executed. Click any cell for every agent's runs on that problem, the clicked one first. The column header does the same with nobody first."
-      : (m.label + (m.cat ? " score, averaged over runs that reached a judge. " :
-                            ", averaged over every run including the zeros. ") +
-         "Click any cell for every agent's runs on that problem, the clicked one first. The column header does the same with nobody first.");
+      ? "Share of submissions that executed. Click any cell for every variant's problem-runs on that problem, the clicked one first. The column header does the same with nobody first."
+      : (m.label + (m.cat ? " score, averaged over problem-runs that reached a judge. " :
+                            ", averaged over every problem-run including the zeros. ") +
+         "Click any cell for every variant's problem-runs on that problem, the clicked one first. The column header does the same with nobody first.");
 
     host.appendChild(el("div"));
     // The header selects the whole column, which is the panel's scope anyway.
-    // Clicking a cell pins one agent to the top of it; clicking the header
+    // Clicking a cell pins one variant to the top of it; clicking the header
     // asks for the problem with nobody pinned.
     PROBLEMS.forEach((p, pi) => {
       const h = el("button", "g-h" + (selection && selection.p === pi ? " on" : ""), p);
       h.type = "button";
-      h.setAttribute("aria-label", p + ", all agents");
+      h.setAttribute("aria-label", p + ", all variants");
       h.addEventListener("click", () => {
         selection = { v: null, p: pi };
         renderGrid();
@@ -601,7 +599,7 @@ table.data th .thw {
 
     for (const vi of vis) {
       // The row label carries the selection too. The cell outline alone says
-      // which problem, never which agent, and the agent is the harder of the
+      // which problem, never which variant, and the variant is the harder of the
       // two to read off these names.
       const name = el("div", "g-r" + (selection && selection.v === vi ? " on" : ""),
                       VARIANTS[vi].short);
@@ -627,12 +625,10 @@ table.data th .thw {
         }
         b.setAttribute("aria-label", VARIANTS[vi].label + ", " + PROBLEMS[pi] + ", " +
           m.label + " " + (v === null ? "no data" : (measure === "ran" ? pct(v) : fx(v, 1))) +
-          ", " + n + " runs");
+          ", " + n + " problem-runs");
         b.addEventListener("click", () => {
-          // A repeat click holds the cell. It used to clear the selection,
-          // which sent the panel back to its default landing, and with three
-          // agent names differing in one character that reads as the page
-          // ignoring the click rather than as a reset.
+          // A repeat click holds the cell rather than clearing it, because a
+          // reset to the default landing reads as the page ignoring the click.
           selection = { v: vi, p: pi };
           renderGrid();
           renderDetail();
@@ -653,7 +649,7 @@ table.data th .thw {
       host.appendChild(i);
     }
     host.appendChild(el("span", null, measure === "ran" ? "100%" : "100"));
-    host.appendChild(el("span", null, "·  grey means no run"));
+    host.appendChild(el("span", null, "·  grey means no problem-run"));
   }
 
   /* ---- detail ------------------------------------------------------------ */
@@ -662,11 +658,8 @@ table.data th .thw {
     const ctx = document.getElementById("detailctx");
     host.replaceChildren();
 
-    // The panel is scoped to the problem, not to the one cell that was
-    // clicked. Comparing agents is the reason the page exists, and the runs
-    // are the only place the evidence lives, so showing one agent at a time
-    // made the reader hold the other two in their head. The clicked agent
-    // leads the list; the rest follow in the page's one ordering.
+    // Scoped to the problem rather than the clicked cell, so the variants can
+    // be compared side by side. The clicked variant leads the list.
     let target = selection;
     if (!target) {
       // Land on something rather than an empty panel. The first visible cell
@@ -681,7 +674,7 @@ table.data th .thw {
     }
     ctx.replaceChildren();
     if (!target) {
-      ctx.appendChild(el("span", null, "No runs in view."));
+      ctx.appendChild(el("span", null, "No problem-runs in view."));
       host.appendChild(el("p", "empty", "Nothing to show under the current filters."));
       return;
     }
@@ -698,8 +691,8 @@ table.data th .thw {
 
     ctx.appendChild(el("span", "who", PROBLEMS[target.p]));
     ctx.appendChild(el("span", null, "  ·  " + groups.length +
-      (groups.length === 1 ? " agent" : " agents") + "  ·  " + total +
-      (total === 1 ? " run" : " runs") +
+      (groups.length === 1 ? " variant" : " variants") + "  ·  " + total +
+      (total === 1 ? " problem-run" : " problem-runs") +
       (selection ? "" : "  ·  click any cell to change")));
 
     for (const g of groups) {
@@ -707,26 +700,19 @@ table.data th .thw {
       head.appendChild(el("span", "gname", VARIANTS[g.vi].label));
       const scored = g.rows.filter((r) => r.gt > 0 && r.gp === r.gt);
       head.appendChild(el("span", "gmeta",
-        g.rows.length + (g.rows.length === 1 ? " run" : " runs") + "  ·  mean " +
+        g.rows.length + (g.rows.length === 1 ? " problem-run" : " problem-runs") + "  ·  mean " +
         fx(mean(g.rows.map((r) => r.s)), 1) +
         (scored.length === g.rows.length ? "" : "  ·  " +
           (g.rows.length - scored.length) + " scored zero")));
       host.appendChild(head);
       for (const r of g.rows) host.appendChild(runNode(r));
     }
-    if (!groups.length) host.appendChild(el("p", "empty", "No runs for this problem."));
+    if (!groups.length) host.appendChild(el("p", "empty", "No problem-runs for this problem."));
   }
 
-  // How this run's composite was assembled. The contributions sum to the total
-  // it prints, so the row is a check the reader can run. The total sums the
-  // displayed figures rather than the unrounded products, because a row meant
-  // to be checked must add up on screen.
-  // Evaluator rows arranged the way the score was built, because a flat list
-  // invites reading an individual evaluator as the category above it. The
-  // category number is a confidence-weighted mean of the rows beneath it, so
-  // `petsc_best_practices 0.76` sitting under `PETSc usage 83.1` is arithmetic
-  // rather than a contradiction. Gates come last: they can zero the composite
-  // but are never averaged into a category.
+  // Grouped the way the score was built, because a flat list invites reading
+  // one evaluator as the category above it. Gates come last: they can zero the
+  // composite but are never averaged into a category.
   function evaluatorGroups(r) {
     const out = [], placed = new Set();
     for (const c of CATS) {
@@ -750,6 +736,8 @@ table.data th .thw {
     return out;
   }
 
+  // The total sums the displayed figures rather than the unrounded products,
+  // because a row meant to be checked has to add up on screen.
   function metricStrip(r) {
     const cats = CATS.filter((c) => typeof r.cat[c] === "number");
     if (!cats.length) return null;
@@ -792,11 +780,8 @@ table.data th .thw {
     return wrap;
   }
 
-  // Every declared test case, as the harness ran it. A problem declares its own
-  // cases and each runs with its own arguments and rank count, so one run of
-  // GradShafranov is six invocations of the binary. Any one of them failing
-  // fails the execution gate and zeroes the composite, which the reader can
-  // only follow if the failing case is named and its stderr is here.
+  // Every declared test case, because any one of them failing zeroes the
+  // composite and that is unreadable unless the failing case is named here.
   function caseStrip(r) {
     const cases = r.cases || [];
     // Runs made before the harness ran every case carry one argument line and
@@ -836,7 +821,7 @@ table.data th .thw {
     const d = el("details", "run");
     const s = el("summary");
     s.appendChild(el("span", "chev", "›"));
-    s.appendChild(el("span", "rname", REPLICATES[r.r] || "run " + r.r));
+    s.appendChild(el("span", "rname", REPLICATES[r.r] || "replicate " + r.r));
     s.appendChild(el("span", "rmeta", JUDGES[r.j].label + " judging · " + fx(r.wt, 1) + "s" +
       (r.tok ? " · " + r.tok.toLocaleString() + " tok" : "")));
     const tier = el("span", "pill " + (r.t === "FAIL" ? "fail" : "pass"));
@@ -862,10 +847,8 @@ table.data th .thw {
           " of " + r.errlen.toLocaleString() + " characters. Full text in " + r.src + "."));
       }
     } else if (r.gf) {
-      // The other zero. A failing test case no longer throws out of the
-      // harness, so the run is evaluated, a gate fails, and the composite is
-      // zeroed by rule with no stack dump to show. Saying so is the difference
-      // between a verdict the reader can check and an unexplained zero.
+      // A gate failure zeroes the composite by rule, with no stack dump to
+      // show. Without this banner that zero has no visible explanation.
       const banner = el("p", "abortbanner");
       const icon = el("span", null, "◆");
       icon.style.color = css("--status-warning");
@@ -914,10 +897,8 @@ table.data th .thw {
     return d;
   }
 
-  // The source the agent submitted, line-numbered and plain. No highlighting
-  // library: the page stays self-contained and offline. Lines are built on
-  // first open so a detail panel of twenty runs does not lay out twenty
-  // thousand rows up front.
+  // Plain and unhighlighted so the page stays offline and self-contained.
+  // Lines are built on first open, not up front, for panels of twenty runs.
   function sourceNode(f) {
     const det = el("details", "src");
     const sum = el("summary");

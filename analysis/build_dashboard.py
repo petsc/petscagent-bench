@@ -313,7 +313,12 @@ def main() -> None:
                     help="build against the synthetic set in /tmp/petscbench_demo")
     ap.add_argument("--dir", type=Path, action="append",
                     help="result directory to read (repeatable)")
+    ap.add_argument("--out-dir", type=Path, default=ANALYSIS_DIR,
+                    help="where to write the two pages")
     args = ap.parse_args()
+
+    standalone_out = args.out_dir / STANDALONE_OUT.name
+    artifact_out = args.out_dir / ARTIFACT_OUT.name
 
     dirs = None
     if args.demo:
@@ -335,21 +340,22 @@ def main() -> None:
         raise SystemExit(f"{TEMPLATE} is missing the __PAYLOAD__ placeholder.")
     body = template.replace("__PAYLOAD__", blob)
 
-    ARTIFACT_OUT.write_text(body)
-    STANDALONE_OUT.write_text(STANDALONE_HEAD + "</head>\n<body>\n" + body + STANDALONE_TAIL)
+    args.out_dir.mkdir(parents=True, exist_ok=True)
+    artifact_out.write_text(body)
+    standalone_out.write_text(STANDALONE_HEAD + "</head>\n<body>\n" + body + STANDALONE_TAIL)
 
-    n_runs = len(payload["rows"])
+    n_problem_runs = len(payload["rows"])
     n_var = len(payload["variants"])
     n_con = len(payload["contrasts"]["all"])
-    for path in (STANDALONE_OUT, ARTIFACT_OUT):
+    for path in (standalone_out, artifact_out):
         size = path.stat().st_size / 1024
         try:
             shown = path.relative_to(REPO_ROOT)
         except ValueError:
             shown = path
         print(f"{shown}  {size:,.0f} KB")
-    print(f"{n_runs} problem-runs · {n_var} variants · {n_con} contrasts · "
-          f"{payload['codeRuns']} runs with source")
+    print(f"{n_problem_runs} problem-runs · {n_var} variants · {n_con} contrasts · "
+          f"{payload['codeRuns']} problem-runs with source")
 
 
 STANDALONE_HEAD = """<!doctype html>

@@ -24,6 +24,8 @@ import random
 import shutil
 from pathlib import Path
 
+from load_results import EVALUATOR_CATEGORY
+
 DEMO_DIR = Path("/tmp/petscbench_demo")
 
 PROBLEMS = [
@@ -291,12 +293,6 @@ def build(out_dir: Path, seed: int) -> int:
                         })
                         continue
 
-                    cats = {}
-                    for c in CATEGORIES:
-                        v = latent * 100 + rng.gauss(0, 7)
-                        cats[c] = round(max(0.0, min(100.0, v)), 2)
-                    composite = round(sum(cats[c] * WEIGHTS[c] for c in CATEGORIES), 2)
-
                     details = []
                     for g in GATES:
                         details.append({"name": g, "type": "gate", "method": "deterministic",
@@ -304,14 +300,25 @@ def build(out_dir: Path, seed: int) -> int:
                                         "feedback": f"{g}: ok"})
                     for m in METRICS:
                         details.append({"name": m, "type": "metric", "method": "measured",
-                                        "passed": None, "score": round(rng.uniform(40, 99), 1),
+                                        "passed": None, "score": round(rng.uniform(0.4, 0.99), 4),
                                         "confidence": None, "feedback": f"{m} within budget"})
                     for q in QUALITY:
                         details.append({"name": q, "type": "quality", "method": "llm_judge",
-                                        "passed": None, "score": round(max(0, min(100, latent * 100 + rng.gauss(0, 11))), 1),
+                                        "passed": None, "score": round(max(0.0, min(1.0, latent + rng.gauss(0, 0.11))), 4),
                                         "confidence": round(rng.uniform(0.6, 0.95), 2),
                                         "feedback": f"{q}: the submission handles this adequately; "
                                                     f"see the {problem} discretisation for context."})
+
+                    # Derived from the rows rather than drawn beside them, or the
+                    # drill-down's category heading contradicts the rows under it.
+                    cats = {}
+                    for c in CATEGORIES:
+                        rows = [d for d in details if EVALUATOR_CATEGORY.get(d["name"]) == c
+                                and d["score"] is not None]
+                        num = sum(d["score"] * (d["confidence"] or 1.0) for d in rows)
+                        den = sum(d["confidence"] or 1.0 for d in rows)
+                        cats[c] = round(num / den * 100, 2) if den else 0.0
+                    composite = round(sum(cats[c] * WEIGHTS[c] for c in CATEGORIES), 2)
 
                     src = SOURCE_TMPL.format(problem=problem, variant=vid, n=pid * 32)
                     sources.append((problem, "solution.c", src))
