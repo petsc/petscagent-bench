@@ -15,6 +15,7 @@ dependencies = [
     "petsc-ai-servers-clients @ git+https://gitlab.com/petsc/petsc_mcp_servers.git@main",
     "loguru>=0.7.3",
     "numpy>=2.4.1",
+    "matplotlib>=3.10,<4.0",
 ]
 [build-system]
 requires = ["hatchling"]
