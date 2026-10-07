@@ -21,66 +21,55 @@ def load_agent_card_toml(agent_name):
 
 
 def load_green_agent_config(config_path: str = "config/green_agent_config.yaml") -> Dict[str, Any]:
-    """Load evaluation configuration from file or use defaults.
+    """Load evaluation configuration from file.
 
     Supports both JSON and YAML formats. Format is auto-detected by file extension.
+
+    There is deliberately no built-in default. The weights in this file decide
+    every score the benchmark reports, so a harness that cannot read them has
+    nothing to fall back on that would be safe to publish. Failing here costs a
+    restart; carrying on under guessed weights costs a run that looks valid and
+    is not.
 
     Args:
         config_path: Path to the configuration file
 
     Returns:
         Configuration dictionary
+
+    Raises:
+        FileNotFoundError: If the configuration file is missing.
+        ValueError: If it cannot be parsed, or holds no mapping.
     """
     config_file = Path(config_path)
 
-    if config_file.exists():
-        try:
-            with open(config_file, 'r') as f:
-                # Detect format by extension
-                if config_file.suffix.lower() in ['.yaml', '.yml']:
-                    import yaml
-                    config_data = yaml.safe_load(f)
-                else:
-                    config_data = json.load(f)
+    if not config_file.exists():
+        raise FileNotFoundError(
+            f"Green agent config {config_path} not found. Scoring weights come "
+            f"from this file and have no default."
+        )
 
-            print(f"@@@ Green agent: ✅ Loaded evaluation config from {config_path}")
-            return config_data
-        except Exception as e:
-            print(f"@@@ Green agent: Failed to load config from {config_path}: {e}")
-            print(f"@@@ Green agent: Using default evaluation configuration")
-    else:
-        print(f"@@@ Green agent: Config file {config_path} not found, using defaults")
+    try:
+        with open(config_file, 'r') as f:
+            # Detect format by extension
+            if config_file.suffix.lower() in ['.yaml', '.yml']:
+                import yaml
+                config_data = yaml.safe_load(f)
+            else:
+                config_data = json.load(f)
+    except Exception as e:
+        raise ValueError(f"Green agent config {config_path} is unreadable: {e}") from e
 
-    # Fall back to default configuration
-    return {
-        'evaluation': {
-            'enable_gates': True,
-            'enable_metrics': True,
-            'enable_quality': True,
-            'llm': {
-                'model': 'gemini/gemini-3-flash-preview',
-                'api_base_url': None,
-                'temperature': 0.3,
-                'max_concurrent_calls': 3,
-            },
-            'parallel_evaluation': True,
-        },
-        'scoring': {
-            'weights': {
-                'correctness': 0.35,
-                'performance': 0.15,
-                'code_quality': 0.15,
-                'algorithm': 0.15,
-                'petsc': 0.10,
-                'semantic': 0.10,
-            },
-            'tiers': {
-                'gold': 85,
-                'silver': 70,
-                'bronze': 50,
-            },
-        },
-    }
+    # A YAML file that is empty, or holds a bare scalar, parses without error
+    # and would then silently supply no weights at all.
+    if not isinstance(config_data, dict):
+        raise ValueError(
+            f"Green agent config {config_path} must hold a mapping, got "
+            f"{type(config_data).__name__}."
+        )
+
+    print(f"@@@ Green agent: ✅ Loaded evaluation config from {config_path}")
+    return config_data
 
 
 def start_green_agent(
