@@ -136,15 +136,61 @@ not receive credit, as in convergence-study cases.
 
 ### Files written to disk
 
-The Green Agent writes one file per run to `output/`, named after the model under test and the judge used to score it:
+The Green Agent writes the scores of a pass to one aggregate JSON in
+`output/`, named after the model under test and the judge used to score it:
 
-- `output/<purple_model>-judged-by-<green_model>-run<N>.json`, for example
-  `output/gpt52-judged-by-claudeopus46-run1.json`
+- `output/<purple_model>-judged-by-<green_model>.json`, for example
+  `output/gpt52-judged-by-claudeopus46.json`
 
-The run index is incremented automatically, so repeated runs of the same
-model/judge pair do not overwrite each other. Each file contains the overall
-summary, per-problem results, and the provenance of the run (`purple_model`,
-`judge_model`, `run_index`) along with per-problem token counts.
+A live run writes that file and overwrites whatever it finds there. A rescore
+writes a numbered copy instead, `-s<N>.json`, where *N* comes from `--pass`, so
+replaying never destroys the run being replayed. The number is given rather
+than derived, so `--replay` without `--pass` is an error. Each file contains
+the overall summary, per-problem results, and the provenance of the pass
+(`purple_model`, `judge_model`, `pass_index`, `submissions`) along with
+per-problem token counts.
+
+The code goes to `output/code/<purple_model>/` and the scores to
+`output/scores/<purple_model>/`. The code belongs to the Purple Agent rather
+than to any judge, so one code tree serves every judge that scores it, and
+every judge writes into the matching score tree:
+
+```
+output/
+├── gpt52-judged-by-claudeopus46.json             # the live run
+├── gpt52-judged-by-claudeopus46-s1.json          # --replay --pass 1
+├── gpt52-judged-by-gemini25pro.json              # a second judge
+├── code/
+│   └── gpt52/
+│       ├── manifest.json
+│       └── advectionpde/
+│           └── Advection_PDE.c
+└── scores/
+    └── gpt52/
+        └── advectionpde/
+            ├── judged-by-claudeopus46.json    # the latest pass by this judge
+            └── judged-by-gemini25pro.json
+```
+
+The two are separate because a score record carries the full source it graded
+along with its `sha256`, so it never has to point at a file. The code tree
+holds the latest generation of each problem and a run that regenerates one
+overwrites it, which strands nothing. `manifest.json` records the `sha256` of
+what is on disk now, so a score can be told apart from the current code without
+reading either.
+
+Both trees hold the current state rather than a history, as does the
+unnumbered aggregate. A later pass overwrites a score file, and the pass it
+came from is inside it as `pass_index`, null for a live run. History is what
+the numbered aggregates are for, so a pass worth keeping asks for a number and
+the trees never have to carry one.
+
+Keeping the code of two generations side by side as files still needs two
+directories.
+
+Solving the suite a few problems at a time works, because a run adds the
+problems it generated to the manifest rather than rebuilding it, so the ones an
+earlier run solved keep their entries.
 
 Each per-problem result also includes Purple Agent efficiency measured at the
 A2A boundary: request/response bytes, response-event count, time to first
@@ -430,23 +476,31 @@ class MyCustomEvaluator(Evaluator):
 
 ### Replaying a recorded run
 
-`uv run main.py launch --replay output/<run>.json` rescores the submissions a
-previous run recorded instead of generating new ones. The Purple Agent is not
-started and is never contacted. Each problem's `generated_sources` are rebuilt
-under their original filenames, so the same compile and run path applies as on
-the run that produced them.
+`uv run main.py launch --replay output/<run>.json --pass 1` rescores the
+submissions a previous run recorded instead of generating new ones. The Purple
+Agent is not started and is never contacted. Each problem's
+`generated_sources` are rebuilt under their original filenames, so the same
+compile and run path applies as on the run that produced them.
 
 This is what makes a judge comparison valid. Two judges scoring the same
 replayed submissions differ only by the judge. `run_judge_swap.py` uses it that
 way, generating once with the baseline judge and replaying that output file for
 every other judge, then asserting the gates came out identical.
 
-A rescore writes beside the file it replays rather than on top of it, so both
-passes survive. It always sweeps the whole recorded run, so `--problems` is
-refused alongside `--replay`, and a replay file disagreeing with `data/` in
-either direction aborts before scoring. Writing back fewer problems than were
-read would leave the ones left out with no copy of their code anywhere, since
+A rescore always sweeps the whole recorded run, so `--problems` is refused
+alongside `--replay`, and a replay file disagreeing with `data/` in either
+direction aborts before scoring. Writing back fewer problems than were read
+would leave the ones left out with no copy of their code anywhere, since
 replay reads submissions from the file rather than from the tree.
+
+A rescore writes into the directory holding the file it replays, under the
+number `--pass` gives it. The number is required, because without one the
+rescore would land on the live aggregate and overwrite the run it is
+replaying. Two rescores of one run therefore need two numbers, and reusing a
+number is how you redo a pass. The rescore leaves the replayed file and the
+code tree as they are, since replaying an earlier generation would otherwise
+put old code back over whatever the tree holds now. Replaying a run recorded
+before the tree existed builds one from the sources the file already carries.
 
 Replayed problems are marked `purple_response_replayed` in the results, and
 they are excluded from efficiency aggregates and from the self-reported model
@@ -470,4 +524,4 @@ detection, because their telemetry describes the earlier run.
 ## Release history
 
 See [CHANGELOG.md](CHANGELOG.md) for release notes.
-6. **Missing output files**: Only the per-run `output/<purple_model>-judged-by-<green_model>-run<N>.json` file is written to disk by default; other reports are emitted as task artifacts.
+6. **Missing output files**: Only the aggregate `output/<purple_model>-judged-by-<green_model>.json` file, the `output/code/<purple_model>/` tree and the `output/scores/<purple_model>/` tree are written to disk by default; other reports are emitted as task artifacts.

@@ -63,6 +63,11 @@ def launch(
     replay: str = typer.Option(
         None, help="Rescore the submissions recorded in a previous run's "
                    "output JSON instead of generating new ones."),
+    pass_index: int = typer.Option(
+        None, "--pass", help="Which rescore slot to write, counting from 1. "
+                             "Required with --replay and rejected without it, "
+                             "because a live run always overwrites the "
+                             "unnumbered aggregate."),
     problems: str = typer.Option(
         None, help="Evaluate only the problems matching these comma-separated "
                    "terms, e.g. 'darcy,robertson'. A term matches part of a "
@@ -91,6 +96,18 @@ def launch(
         typer.echo("--problems cannot be combined with --replay: a rescore "
                    "always sweeps the whole recorded run.", err=True)
         raise typer.Exit(code=1)
+    if replay and pass_index is None:
+        typer.echo("--replay needs --pass N, where N is 1, 2, 3 and so on. "
+                   "It names the -s<N> aggregate the rescore writes, so the "
+                   "run being replayed is left alone.", err=True)
+        raise typer.Exit(code=1)
+    if pass_index is not None and not replay:
+        typer.echo("--pass numbers a rescore, so it only applies to --replay. "
+                   "A live run writes the unnumbered aggregate.", err=True)
+        raise typer.Exit(code=1)
+    if pass_index is not None and pass_index < 1:
+        typer.echo("--pass counts from 1.", err=True)
+        raise typer.Exit(code=1)
     if problems:
         try:
             select_problems(read_from_json(Path("./data")), problems)
@@ -98,7 +115,8 @@ def launch(
             typer.echo(str(e), err=True)
             raise typer.Exit(code=1)
 
-    asyncio.run(launch_evaluation(purple_url=purple_url, replay=replay, problems=problems))
+    asyncio.run(launch_evaluation(purple_url=purple_url, replay=replay,
+                                  problems=problems, pass_index=pass_index))
 
 
 @app.command()

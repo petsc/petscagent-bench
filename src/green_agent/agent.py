@@ -421,7 +421,7 @@ class Agent:
 
     The agent distributes test tasks to participant agents, collects their responses, and reports the results.
     """
-    def __init__(self, config: Dict[str, Any], purple_agent_url, mcp_server_url, max_num_prob=None, green_id=None, purple_id=None, purple_model=None, replay_path=None, problems=None):
+    def __init__(self, config: Dict[str, Any], purple_agent_url, mcp_server_url, max_num_prob=None, green_id=None, purple_id=None, purple_model=None, replay_path=None, problems=None, pass_index=None):
         self.config = config
         self.llm_config = config.get("evaluation", {}).get("llm", {})
         self.model = self.llm_config.get("model")
@@ -440,9 +440,21 @@ class Agent:
                 "--problems cannot be combined with --replay: a rescore "
                 "always sweeps the whole recorded run"
             )
+        # Which numbered aggregate a rescore writes, None for a live run. The
+        # number is given rather than derived, so a pass lands where the
+        # caller says even if an earlier one was deleted or is still running.
+        if bool(replay_path) != (pass_index is not None):
+            raise ValueError(
+                "--pass numbers a rescore, so it is required with --replay "
+                "and rejected without it"
+            )
+        if pass_index is not None and pass_index < 1:
+            raise ValueError("--pass counts from 1")
+        self.pass_index = pass_index
         # A rescore writes beside the run it replays rather than on top of it,
         # so both passes survive.
         self.output_dir = Path(replay_path).parent if replay_path else Path("output")
+        self.replay_variant = None
         self.metrics = {}
         self.green_id = green_id
         self.purple_id = purple_id
@@ -456,6 +468,10 @@ class Agent:
             self.replay_index = {
                 r["problem_name"]: r for r in record.get("results", [])
             }
+            replayed_model = record.get("reported_model") or record.get("purple_model")
+            # A record naming neither leaves this None, so the tree is named
+            # from this pass instead of from the slug for "unknown".
+            self.replay_variant = _name_slug(replayed_model) if replayed_model else None
             print(
                 f"@@@ Green agent: ✅ Replaying {len(self.replay_index)} recorded "
                 f"submissions from {replay_path}"
@@ -929,10 +945,8 @@ class Agent:
             results, self.config.get("scoring", {}).get("efficiency", {})
         )
 
-        # Save output as <purple_model>-judged-by-<green_model>-run<N>.json so that
-        # repeated launches do not overwrite each other. Prefer the model the Purple
-        # self-reported in its telemetry (so a composite agent can label itself, e.g.
-        # "pdesim-<model>-c<N>"), falling back to the purple_model task tag.
+        # The self-reported name wins so a composite agent can label itself,
+        # e.g. "pdesim-<model>-c<N>".
         reported_model = _reported_model(results)
         effective_model = reported_model or self.purple_model
         output_dir = self.output_dir
@@ -942,36 +956,21 @@ class Agent:
         model_slug = _name_slug(effective_model)
         judge_slug = _name_slug(self.model)
         prefix = f"{model_slug}-judged-by-{judge_slug}"
-        # Take the next free index by creating its directory, which is atomic
-        # and so settles a race between two tasks finishing at once. The loser
-        # sees FileExistsError and takes the next index rather than losing a
-        # whole run's results to the winner's aggregate.
-        while True:
-            # Count every artifact a run leaves behind, or an index whose JSON
-            # was deleted but whose tree survived would be reused forever.
-            # "sources" is the pre-rename name, still present in output/.
-            used = [
-                int(m.group(1))
-                for p in [
-                    *output_dir.glob(f"{prefix}-run*.json"),
-                    *(output_dir / "runs").glob(f"{prefix}-run*"),
-                    *(output_dir / "sources").glob(f"{prefix}-run*"),
-                ]
-                if (m := re.search(r"-run(\d+)(?:\.json)?$", p.name))
-            ]
-            run_index = max(used, default=0) + 1
-            run_dir = output_dir / "runs" / f"{prefix}-run{run_index}"
-            try:
-                run_dir.mkdir(parents=True, exist_ok=False)
-                break
-            except FileExistsError:
-                # The rescan now counts this directory, so the index rises and
-                # the loop cannot spin.
-                continue
+        # The submissions belong to the purple agent alone, so one tree per
+        # variant serves every judge that scores it. A rescore names the tree
+        # from the record it replays, where the code it is about to score sits.
+        variant = self.replay_variant or model_slug
+        code_dir = output_dir / "code" / variant
+        scores_dir = output_dir / "scores" / variant
+        # A live run overwrites the unnumbered aggregate, the same way it
+        # overwrites the two trees. A rescore writes the copy --pass names, so
+        # it never lands on the run it is replaying.
+        suffix = f"-s{self.pass_index}" if self.pass_index else ""
+        local_path = output_dir / f"{prefix}{suffix}.json"
 
         local_path, json_data = self._write_aggregate(
             results, summary, pass_stamp,
-            output_dir, run_dir, prefix, run_index, reported_model,
+            local_path, code_dir, scores_dir, self.pass_index, reported_model,
         )
         print(f"@@@ Green agent: Saved results to {local_path}")
         await updater.add_artifact(
@@ -994,18 +993,15 @@ class Agent:
 
     def _write_aggregate(
         self, results, summary, pass_stamp,
-        output_dir, run_dir, prefix, run_index, reported_model,
+        local_path, code_dir, scores_dir, pass_index, reported_model,
     ):
-        """Write the run's aggregate JSON and its run tree.
+        """Write the pass's aggregate JSON, its code tree and its score tree.
 
-        The run index and directory are decided by the caller, because
-        allocating them is what settles a race between two runs finishing at
-        once.
+        `pass_index` is None for a live run.
 
         Returns:
             (path, json_data) for the caller to report and attach.
         """
-        local_path = output_dir / f"{prefix}-run{run_index}.json"
         # Built once so the aggregate and the per-problem files below hold the
         # same data. They are indented differently, being at different depths.
         records = [asdict(r) for r in results]
@@ -1018,7 +1014,12 @@ class Agent:
             "purple_model": self.purple_model,
             "reported_model": reported_model,
             "judge_model": self.model,
-            "run_index": run_index,
+            # The rescore slot this pass was given, null for a live run.
+            "pass_index": pass_index,
+            # Where the code tree is, so a reader need not rebuild the name.
+            # It holds the latest generation rather than this pass's, which
+            # the records below carry in full.
+            "submissions": f"code/{code_dir.name}",
             # Null for a full run. Never set on a rescore, which always
             # sweeps the whole recorded set.
             "problem_filter": self.problems,
@@ -1027,38 +1028,72 @@ class Agent:
             "results": records,
         }
         local_path.write_text(json.dumps(json_data, indent=2))
-        self._write_submissions(results, run_dir)
-        self._write_scores(results, records, run_dir)
+        code_dir.mkdir(parents=True, exist_ok=True)
+        # A rescore replays code an earlier run generated, so writing it would
+        # put an old generation over whatever the tree holds now. It leaves the
+        # tree alone, unless the replayed run predates the tree, in which case
+        # there is nothing to overwrite and the sources are materialised.
+        already_written = (code_dir / "manifest.json").is_file()
+        if not (self.replay_index and already_written):
+            self._write_submissions(results, code_dir)
+        self._write_scores(results, records, scores_dir)
         return local_path, json_data
 
-    def _write_submissions(self, results, run_dir):
+    def _write_submissions(self, results, code_dir):
         """Write the code the purple agent produced, and a manifest of it.
 
-        The manifest names each file relative to the tree root, so it stays
-        valid wherever the tree is read from.
+        The tree holds the latest generation of each problem, so a run that
+        regenerates one overwrites it. Nothing is lost, because every score
+        carries the source it graded along with its sha256, and the manifest
+        records the sha of what is on disk now, so a score can be told apart
+        from the current code without reading either.
+
+        A run solving problems the tree does not hold yet adds to the manifest
+        rather than replacing it, so the problems an earlier run solved keep
+        their entries. The manifest names each file relative to the tree root,
+        so it stays valid wherever the tree is read from.
         """
         source_manifest = []
         for result in results:
-            problem_dir = run_dir / _slug(result.problem_name)
-            problem_dir.mkdir(exist_ok=True)
+            problem_dir = code_dir / _slug(result.problem_name)
+            problem_dir.mkdir(parents=True, exist_ok=True)
             for source_record in result.generated_sources or []:
                 source_path = problem_dir / source_record["server_name"]
                 source_path.write_text(source_record["source"], encoding="utf-8")
                 source_manifest.append({
                     "problem_name": result.problem_name,
-                    "filename": str(source_path.relative_to(run_dir)),
+                    "filename": str(source_path.relative_to(code_dir)),
                     "sha256": source_record["sha256"],
                 })
-        (run_dir / "manifest.json").write_text(
-            json.dumps(source_manifest, indent=2), encoding="utf-8"
+        manifest_path = code_dir / "manifest.json"
+        kept = []
+        if manifest_path.is_file():
+            written = {entry["problem_name"] for entry in source_manifest}
+            kept = [
+                entry
+                for entry in json.loads(manifest_path.read_text(encoding="utf-8"))
+                if entry["problem_name"] not in written
+            ]
+        manifest_path.write_text(
+            json.dumps(kept + source_manifest, indent=2), encoding="utf-8"
         )
 
-    def _write_scores(self, results, records, run_dir):
-        """Write each problem's record beside the code it grades."""
+    def _write_scores(self, results, records, scores_dir):
+        """Write each problem's latest record into the score tree.
+
+        Like the code tree, this holds the current state rather than a
+        history. A later pass overwrites the file, and the pass that wrote it
+        is inside it as `pass_index`, null for a live run. The numbered
+        aggregates are what a history is for, so these names carry no number.
+
+        The judge is in the filename because the tree is shared, so a second
+        judge does not overwrite the first.
+        """
+        judge_slug = _name_slug(self.model)
         for result, record in zip(results, records):
-            problem_dir = run_dir / _slug(result.problem_name)
-            problem_dir.mkdir(exist_ok=True)
-            (problem_dir / "result.json").write_text(
+            problem_dir = scores_dir / _slug(result.problem_name)
+            problem_dir.mkdir(parents=True, exist_ok=True)
+            (problem_dir / f"judged-by-{judge_slug}.json").write_text(
                 json.dumps(record, indent=2), encoding="utf-8"
             )
 

@@ -124,7 +124,6 @@ class CodeFixTests(unittest.TestCase):
         self.assertIn("executable=pname, nsize=nsize, args=cli_args", text)
         self.assertIn('"sha256": hashlib.sha256', text)
         self.assertIn('"source": source', text)
-        self.assertIn('output_dir / "runs" / f"{prefix}-run{run_index}"', text)
         self.assertIn("code=code", text)
 
     def test_rank_forwarding_and_valgrind_behavior(self):
@@ -493,16 +492,21 @@ class CodeFixTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             recorded = Path(tmp) / "recorded" / "anything.json"
             recorded.parent.mkdir()
-            recorded.write_text(json.dumps({"results": []}))
+            recorded.write_text(json.dumps(
+                {"reported_model": "pdesim-Claude-Opus4.6-c1", "results": []}))
 
-            # A plain run still writes to the live output tree.
-            self.assertEqual(build().output_dir, Path("output"))
+            # A plain run still writes to the live output tree, and names its
+            # variant from this pass rather than from a replayed one.
+            plain = build()
+            self.assertEqual(plain.output_dir, Path("output"))
+            self.assertIsNone(plain.replay_variant)
 
-            # A rescore lands in the directory it replays rather than beside
-            # unrelated runs in output/, so its scores sit with the set they
-            # grade and the older pass survives next to them.
-            self.assertEqual(
-                build(replay_path=str(recorded)).output_dir, recorded.parent)
+            # A rescore lands in the directory it replays, and takes the
+            # variant from the record rather than from the filename, so a
+            # file named by hand still scores the code it carries.
+            rescore = build(replay_path=str(recorded), pass_index=1)
+            self.assertEqual(rescore.output_dir, recorded.parent)
+            self.assertEqual(rescore.replay_variant, "pdesim-claude-opus46-c1")
 
     def test_select_problems_matches_by_substring_and_glob(self):
         from src.green_agent.agent import select_problems
@@ -676,6 +680,127 @@ class DerivedSummaryTest(unittest.TestCase):
         self.assertEqual(s["total"], 3)
         self.assertEqual(s["runs_count"], 2)
         self.assertEqual(s["failure_count"], 1)
+
+
+class WhatALaterPassMayOverwriteTest(unittest.TestCase):
+    """Numbering, and what a second pass is allowed to touch.
+
+    Every loss guarded against here would be a silent one.
+    """
+
+    def test_a_rescore_has_to_be_numbered_and_a_live_run_cannot_be(self):
+        from src.green_agent.agent import Agent
+
+        def build(**kw):
+            return Agent(config={"evaluation": {"llm": {"model": "none/none"}}},
+                         purple_agent_url="http://purple",
+                         mcp_server_url="http://mcp", **kw)
+
+        # Unnumbered, a rescore would land on the live aggregate and destroy
+        # the run it is replaying.
+        with self.assertRaises(ValueError):
+            build(replay_path="recorded.json")
+        # A number on a live run would claim a slot the run does not own.
+        with self.assertRaises(ValueError):
+            build(pass_index=1)
+
+    def write(self, out, source, judge, replaying, pass_index=None):
+        """Write one pass, naming the aggregate the way `run` would."""
+        from src.green_agent.agent import Agent, BenchmarkResult, _derive_summary
+
+        agent = Agent.__new__(Agent)
+        agent.purple_id, agent.purple_model, agent.model = "p", "tag", judge
+        agent.problems = None
+        agent.replay_index = {"alpha": {}} if replaying else None
+        results = [BenchmarkResult(
+            problem_name="alpha", problem_id="a", runs=True, compiles=True,
+            composite_score=1.0, tier="GOLD", scored_at="t", scored_by=judge,
+            generated_sources=[{"original_name": "a.c", "server_name": "a.c",
+                                "source": source, "sha256": "x"}],
+        )]
+        suffix = f"-s{pass_index}" if pass_index else ""
+        agent._write_aggregate(
+            results, _derive_summary(results), "t",
+            out / f"tag-judged-by-{judge}{suffix}.json",
+            out / "code" / "tag", out / "scores" / "tag", pass_index, None,
+        )
+
+    def test_a_rescore_scores_the_code_it_replays(self):
+        import json
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            self.write(out, "/* generated */", "a", replaying=False)
+            code = out / "code" / "tag" / "alpha" / "a.c"
+
+            # A rescore replays an earlier generation, so writing it would
+            # put old code back over whatever the tree holds now. It leaves
+            # the tree alone, and the two judges' scores sit side by side.
+            self.write(out, "/* replayed */", "b", replaying=True, pass_index=1)
+            self.assertEqual(code.read_text(), "/* generated */")
+            self.assertEqual(
+                sorted(p.name for p in (out / "scores" / "tag" / "alpha").iterdir()),
+                ["judged-by-a.json", "judged-by-b.json"],
+            )
+
+            # Regenerating overwrites the code tree, the score tree and the
+            # live aggregate, which is what a live run is allowed to do. It
+            # does not touch the slot the rescore was given.
+            self.write(out, "/* regenerated */", "a", replaying=False)
+            self.assertEqual(code.read_text(), "/* regenerated */")
+            latest = json.loads(
+                (out / "scores" / "tag" / "alpha" / "judged-by-a.json").read_text()
+            )
+            self.assertEqual(latest["generated_sources"][0]["source"],
+                             "/* regenerated */")
+            self.assertEqual(
+                sorted(p.name for p in out.glob("*.json")),
+                ["tag-judged-by-a.json", "tag-judged-by-b-s1.json"],
+            )
+            kept = json.loads((out / "tag-judged-by-b-s1.json").read_text())
+            self.assertEqual(
+                kept["results"][0]["generated_sources"][0]["source"],
+                "/* replayed */",
+            )
+
+
+class TheCodeTreeHoldsTheLatestGenerationTest(unittest.TestCase):
+    """What a later run is allowed to do to the tree it finds.
+
+    Code and scores live in separate trees, so a regeneration may overwrite
+    the code freely. The manifest still has to describe everything on disk,
+    not just what the latest run touched.
+    """
+
+    def test_a_later_run_adds_to_the_manifest_instead_of_replacing_it(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        from src.green_agent.agent import Agent, BenchmarkResult
+
+        def result(name):
+            return BenchmarkResult(
+                problem_name=name, problem_id=name, runs=True, compiles=True,
+                generated_sources=[{"original_name": f"{name}.c",
+                                    "server_name": f"{name}.c",
+                                    "source": "/* c */", "sha256": "x"}],
+            )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = Agent.__new__(Agent)
+            tree = Path(tmp) / "code" / "tag"
+            agent._write_submissions([result("alpha")], tree)
+            # Rebuilding the manifest from this run alone would leave alpha's
+            # code on disk with nothing describing it.
+            agent._write_submissions([result("beta")], tree)
+
+            listed = json.loads((tree / "manifest.json").read_text())
+            self.assertEqual(
+                sorted(entry["problem_name"] for entry in listed),
+                ["alpha", "beta"],
+            )
 
 
 class EvaluationReportTest(unittest.TestCase):

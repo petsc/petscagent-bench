@@ -63,7 +63,7 @@ def run_purple_agent(agent_llm, api_base_url=None):
     # asyncio.run(start_purple_agent(agent_llm="openai/google-claude-45-opus")) # test AskSage
 
 
-async def launch_evaluation(purple_url=None, replay=None, problems=None):
+async def launch_evaluation(purple_url=None, replay=None, problems=None, pass_index=None):
     """Main launcher function - initiates and coordinates the evaluation process.
     
     This function orchestrates the complete benchmark workflow:
@@ -94,6 +94,11 @@ async def launch_evaluation(purple_url=None, replay=None, problems=None):
             built-in purple. Its lifetime belongs to the caller. Such an agent
             names its own output file by self-reporting a model in its
             telemetry, otherwise the run is filed as "unknown".
+        replay: A previous run's output JSON. Its recorded submissions are
+            scored again and no purple agent is started.
+        problems: Comma-separated terms, selecting the problems to evaluate.
+        pass_index: Which numbered aggregate the rescore writes. Required with
+            `replay` and rejected without it.
 
     Raises:
         AssertionError: If any agent fails to become ready within timeout
@@ -174,6 +179,10 @@ async def launch_evaluation(purple_url=None, replay=None, problems=None):
 <replay>
 {replay}
 </replay>
+Write this rescore to numbered slot
+<pass>
+{pass_index}
+</pass>
 """ if replaying else ""
         problems_block = f"""Evaluate only the problems matching
 <problems>

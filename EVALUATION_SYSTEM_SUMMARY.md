@@ -397,7 +397,7 @@ PER-PROBLEM RESULTS
    Correctness: 75.0, Performance: 65.0, Code Quality: 60.0
 ```
 
-### JSON output (`output/<purple_model>-judged-by-<green_model>-run<N>.json`)
+### JSON output (`output/<purple_model>-judged-by-<green_model>.json`)
 
 The Green Agent writes a JSON file with this top-level structure:
 
@@ -407,7 +407,8 @@ The Green Agent writes a JSON file with this top-level structure:
   "purple_model": "<purple_model>",
   "reported_model": "<self-reported model, or null>",
   "judge_model": "<green_model>",
-  "run_index": 1,
+  "pass_index": null,
+  "submissions": "<purple_model>",
   "summary": { /* ... */ },
   "results": [ /* ... */ ]
 }
@@ -436,7 +437,8 @@ The Green Agent can **replay a previous run** instead of calling the Purple
 Agent, which is how a judge is swapped without regenerating any code:
 
 ```python
-# In src/green_agent/agent.py, driven by `main.py launch --replay <run.json>`
+# In src/green_agent/agent.py, driven by
+# `main.py launch --replay <run.json> --pass <N>`
 self.replay_index = {r["problem_name"]: r for r in record["results"]}
 
 def _replay_response(self, problem_name: str):
@@ -659,34 +661,49 @@ config/
 
 ```
 output/
-└── <purple_model>-judged-by-<green_model>-run<N>.json
+├── <purple_model>-judged-by-<green_model>.json        # the live run
+├── <purple_model>-judged-by-<green_model>-s<N>.json   # a rescore, --pass N
+├── code/<purple_model>/
+└── scores/<purple_model>/
 ```
 
 **Emitted as task artifacts** (via `TaskUpdater.add_artifact`):
 
-- `<purple_model>-judged-by-<green_model>-run<N>.json`
+- `<purple_model>-judged-by-<green_model>.json`
 - `evaluation_report.txt`
 - `evaluation_detailed_report.json`
 - `benchmark_result_<problem_name>.json`
 
-**Per-run tree**:
+**Code and score trees**:
 
 ```
-output/runs/<run>/
+output/code/<purple_model>/
 ├── <problem>/*.c
-├── <problem>/result.json
 └── manifest.json
+output/scores/<purple_model>/
+└── <problem>/judged-by-<green_model>.json
 ```
 
-`result.json` is that problem's entry from the aggregate `results` array,
-written out on its own so a single problem can be read without parsing the
-whole run. Runs recorded before this tree was renamed are under
-`output/sources/<run>/` and hold sources only.
+One code tree per model, because the code is what the Purple Agent produced
+and no judge changes it. A regeneration overwrites it, which strands no score,
+because a score record carries the full source it graded along with its
+`sha256` and so does not depend on the tree. `manifest.json` records the
+`sha256` of what is on disk now.
+
+A rescore overwrites `judged-by-<green_model>.json` and leaves the code alone.
+Both trees hold the current state rather than a history, as does the
+unnumbered aggregate, and every aggregate holds its own pass in full. Each
+score file is that problem's entry from the aggregate `results` array, written
+out on its own so a single problem can be read without parsing the whole pass.
+
+Output recorded before this layout is under `output/runs/<run>/`,
+`output/sources/<run>/` or `output/<purple_model>/`. Nothing writes or reads
+those paths any more.
 
 ## Status
 
 - ✅ Implemented with 14 evaluators (when all phases are enabled)
 - ✅ Integrated into the Green Agent benchmarking pipeline
 - ✅ Configurable via `config/green_agent_config.yaml`
-- ✅ Emits summary results to disk (`output/<purple_model>-judged-by-<green_model>-run<N>.json`) and additional reports as task artifacts
-- ✅ Supports replaying a recorded run to rescore fixed submissions (`--replay`)
+- ✅ Emits summary results to disk (`output/<purple_model>-judged-by-<green_model>.json`) and additional reports as task artifacts
+- ✅ Supports replaying a recorded run to rescore fixed submissions (`--replay` with `--pass`)
