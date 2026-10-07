@@ -37,13 +37,14 @@ from load_results import (
     REPO_ROOT,
     TIER_ORDER,
     Record,
+    RescoreSpread,
     bootstrap_ci,
     correlation,
     find_contrasts,
     label_for,
     load_records,
     paired_bootstrap,
-    variance_components,
+    rescore_spread,
 )
 
 # Harness exception text runs to ~19k characters for a PETSc stack dump. The
@@ -103,7 +104,12 @@ def variant_sort_key(v) -> tuple:
             len(v.skills), v.variant_id)
 
 
-def build_payload(dirs: list[Path] | None) -> dict:
+def build_payload(dirs: list[Path] | None) -> tuple[dict, list[RescoreSpread]]:
+    """The page payload, and the rescore spread that is reported beside it.
+
+    The spread rides along rather than being loaded again because it is read
+    off the same records and reloading them would reread every source file.
+    """
     records = load_records(dirs, max_source_bytes=SOURCE_CHARS)
     if not records:
         raise SystemExit("No provenanced result files found.")
@@ -236,20 +242,6 @@ def build_payload(dirs: list[Path] | None) -> dict:
             )
         contrasts[key] = out
 
-    # Where the next unit of compute should go. Between-problem variance that
-    # dominates means extra runs of the same problems buy almost nothing.
-    variance = {}
-    for key, subset in slices.items():
-        between, within = variance_components(subset, score)
-        n_problems = len({r.problem for r in subset})
-        n_runs = len({r.replicate for r in subset})
-        variance[key] = {
-            "between": round(between, 1),
-            "within": round(within, 1),
-            "problems": n_problems,
-            "runs": n_runs,
-        }
-
     harness_revs = sorted({r.harness_rev for r in records if r.harness_rev})
     petsc_revs = sorted({r.petsc_rev for r in records if r.petsc_rev})
     n_code = sum(1 for r in records if r.sources)
@@ -280,13 +272,12 @@ def build_payload(dirs: list[Path] | None) -> dict:
         "rows": rows,
         "ci": ci,
         "contrasts": contrasts,
-        "variance": variance,
         "harnessRevs": harness_revs,
         "petscRevs": petsc_revs,
         "codeRuns": n_code,
         "minPaired": MIN_PAIRED_PROBLEMS,
         "nProblems": len(problems),
-    }
+    }, rescore_spread(records)
 
 
 def _nulls_for_nan(obj):
@@ -327,7 +318,8 @@ def main() -> None:
     elif args.dir:
         dirs = args.dir
 
-    payload = _nulls_for_nan(build_payload(dirs))
+    payload, spread = build_payload(dirs)
+    payload = _nulls_for_nan(payload)
     # `</script>` inside evaluator feedback or generated code would close the
     # data block early. `allow_nan=False` keeps a non-finite float from reaching
     # the page as a bare `NaN` token, which is not valid JSON and would fail the
@@ -356,6 +348,17 @@ def main() -> None:
         print(f"{shown}  {size:,.0f} KB")
     print(f"{n_problem_runs} problem-runs · {n_var} variants · {n_con} contrasts · "
           f"{payload['codeRuns']} problem-runs with source")
+    # Only sayable when some submission was scored twice by the same judge, and
+    # silence beats a 0.0 that would read as a judge that never wavers. Not
+    # called judge noise because the judge re-runs the code each pass, so
+    # machine timing moves the metric rows even when no opinion changed.
+    if spread:
+        pooled = math.sqrt(sum(s.sd ** 2 * (len(s.scores) - 1) for s in spread)
+                           / sum(len(s.scores) - 1 for s in spread))
+        worst = spread[0]
+        print(f"rescore spread ±{pooled:.1f} pts pooled over {len(spread)} rescored "
+              f"problem-runs · widest {worst.span:.1f} pts on "
+              f"{worst.problem} / {worst.variant.short_label(FACTORS)} by {worst.judge}")
 
 
 STANDALONE_HEAD = """<!doctype html>

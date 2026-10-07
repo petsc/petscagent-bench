@@ -22,7 +22,7 @@ import json
 import math
 import random
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from itertools import combinations
 from pathlib import Path
 from typing import Any, Callable, Iterable, Sequence
@@ -78,26 +78,18 @@ SCAFFOLD_SHORT = {
     UNRECORDED: "scaffold ?",
 }
 
-# Categories and weights, mirrored from config/green_agent_config.yaml. Kept here
-# so the dashboard can show the weighting without parsing YAML at build time.
-# tests/test_scoring_weights.py holds this equal to the config, because a mirror
-# that drifts shows a plausible weighting that no score was computed under.
-CATEGORY_WEIGHTS = {
-    "correctness": 0.35,
-    "performance": 0.15,
-    "code_quality": 0.15,
-    "algorithm": 0.15,
-    "petsc": 0.20,
-}
-
-# Which category each evaluator feeds. Read from the harness rather than copied,
-# so the detail view groups rows exactly the way the score was aggregated. An
-# evaluator missing from this map is a gate, which gates the composite but is
+# Weights and evaluator mapping, both read from the harness rather than copied,
+# so the page can never show a weighting no score was computed under. An
+# evaluator missing from the map is a gate, which gates the composite but is
 # never averaged into a category.
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
+import yaml  # noqa: E402
 from src.metrics.aggregation import MetricsAggregator as _Aggregator  # noqa: E402
 
+_CONFIG = yaml.safe_load((REPO_ROOT / "config" / "green_agent_config.yaml").read_text())
+_AGG = _Aggregator(_CONFIG)
+CATEGORY_WEIGHTS = dict(_AGG.CATEGORY_WEIGHTS)
 EVALUATOR_CATEGORY = dict(_Aggregator.EVALUATOR_CATEGORY_MAP)
 
 TIER_ORDER = ("GOLD", "SILVER", "BRONZE", "FAIL")
@@ -269,7 +261,8 @@ class Record:
     # so its number is appended.
     replicate: str
     # Which scoring pass over those submissions, 0 for a legacy file that
-    # recorded no pass at all.
+    # recorded no pass at all. When several passes were merged this is the
+    # last of them.
     pass_index: int
     problem: str
     problem_id: str
@@ -284,6 +277,15 @@ class Record:
     wall_time_sec: float
     execution_time_sec: float
     total_tokens: int | None
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    cached_tokens: int | None = None
+    agent_cost_usd: float | None = None
+    model_calls: int | None = None
+    tool_calls: int | None = None
+    peak_context_tokens: int | None = None
+    agent_wall_time_sec: float | None = None
+    response_replayed: bool = False
     harness_rev: str = ""
     petsc_rev: str = ""
     error: str = ""
@@ -296,6 +298,17 @@ class Record:
     # empty whenever a caller loads with_sources=False, so only this one can
     # be asked whether the purple produced anything.
     submitted_sources: int = 0
+    # Each merged pass's composite, so the judge's own scoring noise can be
+    # measured after the mean has replaced them. One entry when nothing merged.
+    pass_scores: tuple[float, ...] = ()
+    # Category scores from those same passes, retained for per-category judge
+    # variability rather than only the variability of the final composite.
+    pass_category_scores: tuple[dict[str, float], ...] = ()
+    # One numeric value per evaluator and pass. Scored evaluators retain their
+    # native 0--1 score; binary gates are represented as 1 (pass) or 0 (fail).
+    # This lets publication exports quantify judge variation without confusing
+    # a gate verdict with a continuous evaluator score.
+    pass_evaluator_values: tuple[dict[str, float], ...] = ()
 
     @property
     def agent(self) -> str:
@@ -501,37 +514,117 @@ def _load_sources(
     return by_problem
 
 
-def _newest_passes(docs: list[tuple[Path, dict]]) -> list[tuple[Path, dict]]:
-    """Keep the last scoring pass over each set of submissions.
+def _mean(xs: Sequence[float]) -> float:
+    return sum(xs) / len(xs)
 
-    A rescore writes a new file rather than overwriting the one it replays,
-    so without this every pass counts as another observation and a judge that
-    was run twice gets twice the weight in every mean.
 
-    Keyed per directory, because a repetition is a directory and its passes
-    are its own. Filtered per file rather than per record, because the judge
-    is read per record and a narrowed rescore carries records naming the
-    previous judge, whose pass number is the new file's all the same.
+def _merge_evaluations(groups: list[list[Evaluation]]) -> list[Evaluation]:
+    """Average each evaluator's verdict across the passes that recorded it.
 
-    A document with no pass_index was written before passes were numbered.
-    Those are always kept, or the three repetitions an older run wrote side
-    by side in one directory would collapse into one.
+    The drill-down heads every category with the category score and lists these
+    rows beneath it, so averaging one without the other leaves a heading that
+    contradicts its own rows.
     """
-    def key(path: Path, doc: dict) -> tuple:
-        variant = _parse_variant(doc)
-        return (path.parent, variant.variant_id if variant else None,
-                doc.get("judge_model"))
+    order: list[str] = []
+    seen: dict[str, list[Evaluation]] = {}
+    for evals in groups:
+        for e in evals:
+            if e.name not in seen:
+                order.append(e.name)
+                seen[e.name] = []
+            seen[e.name].append(e)
 
-    newest: dict[tuple, int] = {}
-    for path, doc in docs:
-        if doc.get("pass_index") is not None:
-            k = key(path, doc)
-            newest[k] = max(newest.get(k, 0), int(doc["pass_index"]))
-    return [
-        (path, doc) for path, doc in docs
-        if doc.get("pass_index") is None
-        or int(doc["pass_index"]) == newest[key(path, doc)]
-    ]
+    out = []
+    for name in order:
+        es = seen[name]
+        last = es[-1]
+        scores = [e.score for e in es if e.score is not None]
+        confs = [e.confidence for e in es if e.confidence is not None]
+        verdicts = [e.passed for e in es if e.passed is not None]
+        out.append(
+            Evaluation(
+                name=name,
+                type=last.type,
+                method=last.method,
+                # A gate that failed on any pass did fail, so one False carries.
+                passed=all(verdicts) if verdicts else None,
+                score=_mean(scores) if scores else None,
+                confidence=_mean(confs) if confs else None,
+                # Prose cannot be averaged, so the last pass speaks for the set.
+                feedback=last.feedback,
+            )
+        )
+    return out
+
+
+def _merge_passes(records: list[Record]) -> list[Record]:
+    """Average the scoring passes over each submission into one record.
+
+    A rescore writes a new file rather than overwriting the one it replays, so
+    every pass arrives as its own record. Left alone, a judge run twice would
+    carry twice the weight in every mean. Averaging instead of keeping only the
+    newest is what makes a repeated rescore measure the judge's own noise.
+
+    Keyed on the replicate rather than the directory, which separates the
+    legacy files for free: those carry a `#runN` suffix because they numbered
+    their repetitions inside one directory, and repetitions are not passes.
+    Keyed on the record's judge, so a narrowed rescore's carried-through
+    records stay with the judge that actually scored them.
+    """
+    groups: dict[tuple, list[Record]] = {}
+    for rec in records:
+        key = (rec.replicate, rec.variant.variant_id, rec.judge, rec.problem)
+        groups.setdefault(key, []).append(rec)
+
+    out = []
+
+    def evaluator_values(record: Record) -> dict[str, float]:
+        return {
+            evaluation.name: float(
+                evaluation.score if evaluation.score is not None else evaluation.passed
+            )
+            for evaluation in record.evaluations
+            if evaluation.score is not None or evaluation.passed is not None
+        }
+
+    for group in groups.values():
+        if len(group) == 1:
+            out.append(replace(
+                group[0],
+                pass_scores=(group[0].composite_score,),
+                pass_category_scores=(dict(group[0].categories),),
+                pass_evaluator_values=(evaluator_values(group[0]),),
+            ))
+            continue
+        group.sort(key=lambda r: r.pass_index)
+        last = group[-1]
+        # A run that threw before anything scored it left a zero standing in for
+        # a verdict rather than being one, so it must not pull the mean down.
+        scored = [r for r in group if not r.aborted] or group
+        cats = {
+            c: _mean([r.categories[c] for r in scored if c in r.categories])
+            for c in {c for r in scored for c in r.categories}
+        }
+        composite = _mean([r.composite_score for r in scored])
+        out.append(
+            replace(
+                last,
+                composite_score=composite,
+                categories=cats,
+                # The timings and the case strip are read together in the
+                # drill-down, where the scalar is the first case's runtime, so
+                # both come from the same pass rather than one being a mean.
+                evaluations=_merge_evaluations([r.evaluations for r in scored]),
+                # The stored tier was decided against a single pass's composite,
+                # which the mean has just replaced.
+                tier=_AGG._determine_tier(composite, last.gates_passed == last.gates_total),
+                error="" if len(scored) < len(group) else last.error,
+                pass_scores=tuple(r.composite_score for r in group),
+                pass_category_scores=tuple(dict(r.categories) for r in group),
+                pass_evaluator_values=tuple(evaluator_values(r) for r in group),
+            )
+        )
+    return out
 
 
 def load_records(
@@ -541,8 +634,20 @@ def load_records(
 ) -> list[Record]:
     """Read every provenanced result file into a flat list of records."""
     records: list[Record] = []
-    docs = [(path, json.loads(path.read_text())) for path in _result_files(dirs)]
-    for path, doc in _newest_passes(docs):
+    # A result producer writes files incrementally.  A reader can therefore
+    # observe a JSON file between open() and close(), especially when this
+    # function is rerun immediately after one benchmark problem finishes.
+    # Treat malformed/non-object documents as not-yet-complete snapshots.  A
+    # later invocation will pick them up once the producer has finished them.
+    docs = []
+    for path in _result_files(dirs):
+        try:
+            doc = json.loads(path.read_text())
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            continue
+        if isinstance(doc, dict):
+            docs.append((path, doc))
+    for path, doc in docs:
         variant = _parse_variant(doc)
         judge = doc.get("judge_model")
         if not variant or not judge:
@@ -554,12 +659,16 @@ def load_records(
         # keeps those on their own axis instead of crediting them to the new
         # one. Records written before scored_by existed fall back to the
         # document, which for them is right.
+        # A live run records the key as null, which is pass 0 and belongs in
+        # the mean with the rescores that replay it.
         pass_index = int(doc.get("pass_index") or 0)
         # A legacy file numbered its repetitions within one directory, so the
         # directory alone would merge them. Everything written since puts a
-        # repetition in its own directory and the name is enough.
+        # repetition in its own directory and the name is enough. Those files
+        # predate the key entirely, so its absence is what marks them, not a
+        # null, which is how a live run records being nobody's rescore.
         replicate = _display_path(path.parent)
-        if doc.get("pass_index") is None:
+        if "pass_index" not in doc:
             replicate += f"#run{doc.get('run_index', 0)}"
         harness = doc.get("harness") or {}
         env = doc.get("env") or {}
@@ -567,6 +676,7 @@ def load_records(
 
         for r in doc.get("results", []):
             summary = r.get("evaluation_summary") or {}
+            telemetry = r.get("purple_telemetry") or {}
             problem = r.get("problem_name", "?")
             records.append(
                 Record(
@@ -590,6 +700,17 @@ def load_records(
                     wall_time_sec=float(r.get("time_used_sec") or 0.0),
                     execution_time_sec=float(r.get("execution_time_sec") or 0.0),
                     total_tokens=r.get("total_tokens"),
+                    prompt_tokens=r.get("prompt_tokens"),
+                    completion_tokens=r.get("completion_tokens"),
+                    cached_tokens=r.get("cached_tokens"),
+                    agent_cost_usd=(float(telemetry["cost_usd"])
+                                    if telemetry.get("cost_usd") is not None else None),
+                    model_calls=telemetry.get("model_calls"),
+                    tool_calls=telemetry.get("tool_calls"),
+                    peak_context_tokens=telemetry.get("peak_context_tokens"),
+                    agent_wall_time_sec=(float(r["purple_wall_time_sec"])
+                                         if r.get("purple_wall_time_sec") is not None else None),
+                    response_replayed=bool(r.get("purple_response_replayed")),
                     harness_rev=str(harness.get("git_rev") or ""),
                     petsc_rev=str(env.get("petsc_rev") or ""),
                     error=str(summary.get("error") or ""),
@@ -600,7 +721,7 @@ def load_records(
                     submitted_sources=len(r.get("generated_sources") or []),
                 )
             )
-    return records
+    return _merge_passes(records)
 
 
 # --------------------------------------------------------------------------
@@ -824,33 +945,48 @@ def correlation(
     return num / (dx * dy)
 
 
-def variance_components(
-    records: Iterable[Record],
-    value: Callable[[Record], float],
-) -> tuple[float, float]:
-    """Between-problem and within-problem (run-to-run) variance.
+@dataclass
+class RescoreSpread:
+    """How far one judge's score moved when it rescored the same submission."""
 
-    The ratio decides where the next unit of compute should go. When
-    between-problem dominates, extra runs of the same problems buy almost
-    nothing and extra problems buy a lot; the dashboard says which.
+    variant: Variant
+    judge: str
+    problem: str
+    scores: tuple[float, ...]
+    mean: float
+    sd: float
+    span: float
+
+
+def rescore_spread(records: Iterable[Record]) -> list[RescoreSpread]:
+    """Composite-point spread across repeated passes by the same judge.
+
+    The submissions are identical by construction, so whatever moves between
+    passes belongs to the scoring rather than the code. That is not the same as
+    the judge changing its mind: a pass re-runs the submission, so machine
+    timing moves the metric rows on its own. Keyed on the variant and the
+    problem as well as the judge, or the spread between two arms would be
+    reported as one pass-to-pass difference.
+
+    A narrowed rescore copies the other judge's records through under its own
+    pass number, which lands here as a group that never varies. Those are not
+    repeat judgements, so groups that never moved are left out.
     """
-    by_problem: dict[str, list[float]] = {}
+    out = []
     for rec in records:
-        by_problem.setdefault(rec.problem, []).append(value(rec))
-    if len(by_problem) < 2:
-        return (math.nan, math.nan)
-
-    means = {p: sum(v) / len(v) for p, v in by_problem.items()}
-    grand = sum(means.values()) / len(means)
-    between = sum((m - grand) ** 2 for m in means.values()) / (len(means) - 1)
-
-    within_num = 0.0
-    within_den = 0
-    for p, vals in by_problem.items():
-        if len(vals) < 2:
+        if len(rec.pass_scores) < 2 or len(set(rec.pass_scores)) == 1:
             continue
-        m = means[p]
-        within_num += sum((v - m) ** 2 for v in vals)
-        within_den += len(vals) - 1
-    within = within_num / within_den if within_den else 0.0
-    return (between, within)
+        mean = _mean(rec.pass_scores)
+        var = sum((s - mean) ** 2 for s in rec.pass_scores) / (len(rec.pass_scores) - 1)
+        out.append(
+            RescoreSpread(
+                variant=rec.variant,
+                judge=rec.judge,
+                problem=rec.problem,
+                scores=rec.pass_scores,
+                mean=mean,
+                sd=math.sqrt(var),
+                span=max(rec.pass_scores) - min(rec.pass_scores),
+            )
+        )
+    return sorted(out, key=lambda s: s.sd, reverse=True)

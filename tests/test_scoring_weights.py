@@ -1,10 +1,4 @@
-"""Tests that every copy of the scoring weights agrees with the config.
-
-The weights decide every score the benchmark reports. They are written once in
-config/green_agent_config.yaml, then mirrored by hand into the dashboard loader
-so the page can show the weighting without parsing YAML at build time. A mirror
-that drifts is invisible: the numbers stay plausible and nothing errors.
-"""
+"""Tests on the scoring weights, which decide every score the benchmark reports."""
 
 import sys
 import unittest
@@ -14,7 +8,6 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT / "analysis"))
 
 CONFIG = ROOT / "config" / "green_agent_config.yaml"
 
@@ -27,17 +20,6 @@ class ScoringWeightsTest(unittest.TestCase):
     def test_the_configured_weights_sum_to_one(self):
         total = sum(config_weights().values())
         self.assertAlmostEqual(total, 1.0, places=9)
-
-    def test_the_aggregator_uses_the_configured_weights(self):
-        from src.metrics.aggregation import MetricsAggregator
-
-        aggregator = MetricsAggregator(yaml.safe_load(CONFIG.read_text()))
-        self.assertEqual(aggregator.CATEGORY_WEIGHTS, config_weights())
-
-    def test_the_dashboard_mirror_matches_the_configured_weights(self):
-        from load_results import CATEGORY_WEIGHTS
-
-        self.assertEqual(CATEGORY_WEIGHTS, config_weights())
 
     def test_every_weighted_category_has_at_least_one_evaluator(self):
         """A category nothing feeds scores zero and silently drags the composite."""

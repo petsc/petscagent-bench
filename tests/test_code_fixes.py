@@ -922,7 +922,7 @@ class TheDashboardReadsTheJudgePerRecordTest(LoadsOneResultFile, unittest.TestCa
         self.assertEqual([r.judge for r in records], ["new-judge"])
 
 
-class OnlyTheNewestPassOfEachArmIsCountedTest(unittest.TestCase):
+class PassesOfOneJudgeAverageIntoOneRecordTest(unittest.TestCase):
     """Which files reach a mean once a rescore keeps its own record.
 
     Counting an arm twice because it was rescored, or merging three
@@ -950,7 +950,7 @@ class OnlyTheNewestPassOfEachArmIsCountedTest(unittest.TestCase):
             **extra,
         }
 
-    def test_a_rescore_replaces_its_predecessor_rather_than_joining_it(self):
+    def test_a_rescore_joins_its_predecessor_in_one_mean(self):
         import tempfile
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -964,8 +964,25 @@ class OnlyTheNewestPassOfEachArmIsCountedTest(unittest.TestCase):
             )
             self.assertEqual(
                 sorted((r.judge, r.composite_score) for r in records),
-                [("a", 90.0), ("b", 50.0)],
+                [("a", 50.0), ("b", 50.0)],
             )
+
+    def test_a_live_scoring_is_the_pass_its_rescores_average_with(self):
+        """A live run records the pass key as null, which is pass 0.
+
+        Read as a legacy repetition instead, it lands in its own group and the
+        arm is counted twice, once live and once as the mean of its rescores.
+        """
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            records = self.load(
+                tmp,
+                ("v-judged-by-a.json", self.doc("a", 10.0, pass_index=None)),
+                ("v-judged-by-a-s1.json", self.doc("a", 90.0, pass_index=1)),
+            )
+            self.assertEqual([r.composite_score for r in records], [50.0])
+            self.assertEqual(records[0].pass_scores, (10.0, 90.0))
 
     def test_files_written_before_passes_were_numbered_all_count(self):
         import tempfile
@@ -983,6 +1000,43 @@ class OnlyTheNewestPassOfEachArmIsCountedTest(unittest.TestCase):
             # Each is its own repetition, so none of them averages the others
             # away.
             self.assertEqual(len({r.replicate for r in records}), 3)
+
+    def test_a_merged_category_still_matches_the_rows_beneath_it(self):
+        """The drill-down heads each category with the category score and
+        lists its evaluators under it, and asserts the two agree. Averaging
+        the categories over passes without averaging the evaluators leaves a
+        heading that contradicts its own rows, which is visible only in a
+        browser. The tier must follow the averaged composite too.
+        """
+        import tempfile
+
+        def scored(score, conf, composite, pass_index):
+            rows = [{"name": "readability", "type": "quality",
+                     "method": "llm_judge", "passed": None,
+                     "score": score, "confidence": conf, "feedback": "x"}]
+            return {
+                "purple_model": "somepurple", "judge_model": "a",
+                "pass_index": pass_index,
+                "results": [{
+                    "problem_name": "darcy", "composite_score": composite,
+                    "category_scores": {"code_quality": score * 100},
+                    "evaluation_details": rows,
+                    "evaluation_summary": {"gates_passed": 4, "gates_total": 4},
+                }],
+            }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            records = self.load(
+                tmp,
+                ("v-judged-by-a-s1.json", scored(0.60, 0.9, 60.0, 1)),
+                ("v-judged-by-a-s2.json", scored(0.95, 0.9, 95.0, 2)),
+            )
+            rec, = records
+            row, = [e for e in rec.evaluations if e.score is not None]
+            self.assertAlmostEqual(rec.categories["code_quality"],
+                                   row.score * 100, places=6)
+            self.assertAlmostEqual(rec.composite_score, 77.5, places=6)
+            self.assertEqual(rec.tier, "SILVER")
 
 
 class AnEmptySubmissionIsNeverACompileFailureTest(
