@@ -57,7 +57,19 @@ def set_yaml_field(path, key, value):
     path.write_text(text)
 
 
+def rep_dir(rep):
+    """Where repetition `rep` writes.
+
+    Each repetition generates its own code, and the submissions of one model
+    share a directory within an output tree, so repetitions that shared one
+    tree would overwrite each other's code and leave the earlier scores
+    describing the later run's submissions.
+    """
+    return OUTPUT_DIR if rep == 1 else Path(f"{OUTPUT_DIR}-rep{rep}")
+
+
 def configure(purple_slug, judge_slug):
+    """Point both agents at their models. The output directory is a flag."""
     pm, pu = MODELS[purple_slug]
     jm, ju = MODELS[judge_slug]
     set_yaml_field(PURPLE_CFG, "model", pm)
@@ -67,8 +79,8 @@ def configure(purple_slug, judge_slug):
     return pm, pu, jm, ju
 
 
-def existing_outputs():
-    return {p.name for p in OUTPUT_DIR.glob("*.json")}
+def existing_outputs(out_dir):
+    return {p.name for p in out_dir.glob("*.json")}
 
 
 def main():
@@ -87,7 +99,8 @@ def main():
 
     log_dir = Path(args.log_dir)
     log_dir.mkdir(exist_ok=True)
-    OUTPUT_DIR.mkdir(exist_ok=True)
+    for rep in range(1, args.reps + 1):
+        rep_dir(rep).mkdir(exist_ok=True)
 
     plan = [
         (j, m, r)
@@ -101,21 +114,24 @@ def main():
     results = []
     try:
         for i, (judge, model, rep) in enumerate(plan, 1):
+            out_dir = rep_dir(rep)
             pm, pu, jm, ju = configure(model, judge)
             label = f"[{i}/{len(plan)}] {model} judged-by {judge} rep{rep}"
-            print(f"{label}\n    purple={pm} @ {pu}\n    green ={jm} @ {ju}")
+            print(f"{label}\n    purple={pm} @ {pu}\n    green ={jm} @ {ju}"
+                  f"\n    out   ={out_dir}")
             if args.dry_run:
                 results.append((label, "DRY-RUN", None))
                 continue
 
-            before = existing_outputs()
+            before = existing_outputs(out_dir)
             t0 = time.time()
             log = log_dir / f"{model}-judge-{judge}-rep{rep}.log"
             with open(log, "w") as fh:
-                rc = subprocess.call(["uv", "run", "main.py", "launch"],
+                rc = subprocess.call(["uv", "run", "main.py", "launch",
+                                      "--output", str(out_dir)],
                                      stdout=fh, stderr=subprocess.STDOUT)
             dt = time.time() - t0
-            new = sorted(existing_outputs() - before)
+            new = sorted(existing_outputs(out_dir) - before)
             status = "OK" if (rc == 0 and new) else f"FAILED(rc={rc})"
             print(f"    -> {status} in {dt:.0f}s  new={new or 'NONE'}  log={log}\n")
             results.append((label, status, new[0] if new else None))

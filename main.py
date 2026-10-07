@@ -68,6 +68,10 @@ def launch(
                              "Required with --replay and rejected without it, "
                              "because a live run always overwrites the "
                              "unnumbered aggregate."),
+    output: str = typer.Option(
+        None, help="Write results here instead of the output_dir configured "
+                   "in config/green_agent_config.yaml. Wins over the rule "
+                   "that sends a rescore beside the run it replays."),
     problems: str = typer.Option(
         None, help="Evaluate only the problems matching these comma-separated "
                    "terms, e.g. 'darcy,robertson'. A term matches part of a "
@@ -116,7 +120,8 @@ def launch(
             raise typer.Exit(code=1)
 
     asyncio.run(launch_evaluation(purple_url=purple_url, replay=replay,
-                                  problems=problems, pass_index=pass_index))
+                                  problems=problems, pass_index=pass_index,
+                                  output=output))
 
 
 @app.command()

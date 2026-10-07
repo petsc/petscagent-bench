@@ -63,7 +63,8 @@ def run_purple_agent(agent_llm, api_base_url=None):
     # asyncio.run(start_purple_agent(agent_llm="openai/google-claude-45-opus")) # test AskSage
 
 
-async def launch_evaluation(purple_url=None, replay=None, problems=None, pass_index=None):
+async def launch_evaluation(purple_url=None, replay=None, problems=None, pass_index=None,
+                            output=None):
     """Main launcher function - initiates and coordinates the evaluation process.
     
     This function orchestrates the complete benchmark workflow:
@@ -86,9 +87,9 @@ async def launch_evaluation(purple_url=None, replay=None, problems=None, pass_in
        - Terminates all spawned processes
        - Ensures clean shutdown
     
-    The evaluation results are automatically saved by the Green Agent
-    to the 'output/' directory.
-    
+    The Green Agent writes the results itself, to the directory `output` names
+    or, failing that, to the one its own config sets.
+
     Args:
         purple_url: Evaluate this already-running agent instead of starting the
             built-in purple. Its lifetime belongs to the caller. Such an agent
@@ -99,6 +100,7 @@ async def launch_evaluation(purple_url=None, replay=None, problems=None, pass_in
         problems: Comma-separated terms, selecting the problems to evaluate.
         pass_index: Which numbered aggregate the rescore writes. Required with
             `replay` and rejected without it.
+        output: Where the results go, overriding the Green Agent's config.
 
     Raises:
         AssertionError: If any agent fails to become ready within timeout
@@ -189,6 +191,11 @@ Write this rescore to numbered slot
 {problems}
 </problems>
 """ if problems else ""
+        output_block = f"""Write the results to
+<output>
+{output}
+</output>
+""" if output else ""
         task_text = f"""
 Your task is to instantiate petscagent-bench to test the agent located at:
 <purple_agent_url>
@@ -210,7 +217,7 @@ Purple agent's LLM model is
 <purple_model>
 {purple_model}
 </purple_model>
-{replay_block}{problems_block}    """
+{replay_block}{problems_block}{output_block}    """
         print("Task description:")
         print(task_text)
         print("Sending...")

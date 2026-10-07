@@ -508,6 +508,12 @@ class CodeFixTests(unittest.TestCase):
             self.assertEqual(rescore.output_dir, recorded.parent)
             self.assertEqual(rescore.replay_variant, "pdesim-claude-opus46-c1")
 
+            # --output is the only one of the three the caller stated for
+            # this run, so it wins even over the replayed file's directory.
+            stated = build(replay_path=str(recorded), pass_index=1,
+                           output_dir="elsewhere")
+            self.assertEqual(stated.output_dir, Path("elsewhere"))
+
     def test_select_problems_matches_by_substring_and_glob(self):
         from src.green_agent.agent import select_problems
 

@@ -421,7 +421,7 @@ class Agent:
 
     The agent distributes test tasks to participant agents, collects their responses, and reports the results.
     """
-    def __init__(self, config: Dict[str, Any], purple_agent_url, mcp_server_url, max_num_prob=None, green_id=None, purple_id=None, purple_model=None, replay_path=None, problems=None, pass_index=None):
+    def __init__(self, config: Dict[str, Any], purple_agent_url, mcp_server_url, max_num_prob=None, green_id=None, purple_id=None, purple_model=None, replay_path=None, problems=None, pass_index=None, output_dir=None):
         self.config = config
         self.llm_config = config.get("evaluation", {}).get("llm", {})
         self.model = self.llm_config.get("model")
@@ -451,9 +451,14 @@ class Agent:
         if pass_index is not None and pass_index < 1:
             raise ValueError("--pass counts from 1")
         self.pass_index = pass_index
-        # A rescore writes beside the run it replays rather than on top of it,
-        # so both passes survive.
-        self.output_dir = Path(replay_path).parent if replay_path else Path("output")
+        # --output wins, being the only one of the three the caller stated for
+        # this run. Failing that a rescore takes the replayed file's directory,
+        # so it lands beside the run it rescores and both passes survive.
+        self.output_dir = Path(
+            output_dir
+            or (Path(replay_path).parent if replay_path
+                else config.get("output_dir") or "output")
+        )
         self.replay_variant = None
         self.metrics = {}
         self.green_id = green_id

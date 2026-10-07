@@ -1,3 +1,9 @@
+# Where results are written, unless --output names somewhere else, or a
+# rescore writes beside the run it replays. The submissions of one purple
+# variant share a directory under this, so two runs of the same variant need
+# two output directories to keep both.
+output_dir: "output"
+
 # Evaluation Configuration
 evaluation:
   # Enable/disable evaluation phases

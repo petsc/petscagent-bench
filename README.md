@@ -186,7 +186,12 @@ the numbered aggregates are for, so a pass worth keeping asks for a number and
 the trees never have to carry one.
 
 Keeping the code of two generations side by side as files still needs two
-directories.
+directories. Pass `--output <dir>`, or set `output_dir` in
+`config/green_agent_config.yaml` for a default. The flag wins over both the
+config and the rule that sends a rescore beside the run it replays, since it
+is the only one of the three the caller stated for this run.
+`run_argo_grid.py` passes the flag for you, leaving repetition 1 in `output`
+and sending each later repetition *N* to `output-rep<N>`.
 
 Solving the suite a few problems at a time works, because a run adds the
 problems it generated to the manifest rather than rebuilding it, so the ones an
@@ -493,14 +498,15 @@ direction aborts before scoring. Writing back fewer problems than were read
 would leave the ones left out with no copy of their code anywhere, since
 replay reads submissions from the file rather than from the tree.
 
-A rescore writes into the directory holding the file it replays, under the
-number `--pass` gives it. The number is required, because without one the
-rescore would land on the live aggregate and overwrite the run it is
-replaying. Two rescores of one run therefore need two numbers, and reusing a
-number is how you redo a pass. The rescore leaves the replayed file and the
-code tree as they are, since replaying an earlier generation would otherwise
-put old code back over whatever the tree holds now. Replaying a run recorded
-before the tree existed builds one from the sources the file already carries.
+A rescore writes into the directory holding the file it replays, unless
+`--output` names another one, under the number `--pass` gives it. The number
+is required, because without one the rescore would land on the live aggregate
+and overwrite the run it is replaying. Two rescores of one run therefore need
+two numbers, and reusing a number is how you redo a pass. The rescore leaves
+the replayed file and the code tree as they are, since replaying an earlier
+generation would otherwise put old code back over whatever the tree holds now.
+Replaying a run recorded before the tree existed builds one from the sources
+the file already carries.
 
 Replayed problems are marked `purple_response_replayed` in the results, and
 they are excluded from efficiency aggregates and from the self-reported model
