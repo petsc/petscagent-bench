@@ -568,6 +568,20 @@ class CodeFixTests(unittest.TestCase):
         self.assertEqual(agent.mcp_client.calls[0]["filename"], "helper.h")
 
 
+class FakeUpdater:
+    """Collects what the agent reports instead of sending it anywhere."""
+
+    def __init__(self):
+        self.artifacts = []
+        self.statuses = []
+
+    async def add_artifact(self, name=None, parts=None, metadata=None):
+        self.artifacts.append((name, parts, metadata))
+
+    async def update_status(self, state=None, message=None):
+        self.statuses.append((state, message))
+
+
 class DerivedSummaryTest(unittest.TestCase):
     """The counters must agree with the results list they describe."""
 
@@ -586,6 +600,29 @@ class DerivedSummaryTest(unittest.TestCase):
         self.assertEqual(s["total"], 3)
         self.assertEqual(s["runs_count"], 2)
         self.assertEqual(s["failure_count"], 1)
+
+
+class EvaluationReportTest(unittest.TestCase):
+    """The report must describe what it is given rather than crash on it."""
+
+    def report_text(self, results, summary):
+        from src.green_agent.agent import Agent
+
+        agent = Agent.__new__(Agent)
+        updater = FakeUpdater()
+        asyncio.run(agent._create_evaluation_report(results, summary, updater))
+        return "\n".join(
+            p.text for name, parts, _ in updater.artifacts
+            if name == "evaluation_report.txt" for p in parts
+        )
+
+    def test_an_empty_run_reports_rather_than_dividing_by_zero(self):
+        from src.green_agent.agent import _derive_summary
+
+        text = self.report_text([], _derive_summary([]))
+        self.assertIn("Total Problems: 0", text)
+        self.assertIn("Average Composite Score: n/a", text)
+        self.assertIn("GOLD:   0 (n/a)", text)
 
 
 if __name__ == "__main__":

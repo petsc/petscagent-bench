@@ -934,11 +934,12 @@ class Agent:
         # Create evaluation summary report
         await self._create_evaluation_report(results, summary, updater)
 
+        avg = summary["avg_composite_score"]
         await updater.update_status(
             TaskState.TASK_STATE_COMPLETED,
             new_agent_text_message(
                 f"Done. {summary['runs_count']}/{summary['total']} succeeded. "
-                f"Avg score: {summary.get('avg_composite_score', 0):.1f}/100"
+                f"Avg score: {f'{avg:.1f}/100' if avg is not None else 'n/a'}"
             ),
         )
 
@@ -1085,6 +1086,11 @@ class Agent:
             summary: Summary statistics
             updater: TaskUpdater for creating artifacts
         """
+        def pct(tier):
+            # A run with nothing in it is a report to write, not a crash.
+            total = summary["total"]
+            return f"{summary['tier_distribution'][tier] / total * 100:.1f}%" if total else "n/a"
+
         report_lines = [
             "=" * 80,
             "EVALUATION REPORT",
@@ -1099,13 +1105,19 @@ class Agent:
                 else "Average Purple Agent Time: n/a"
             ),
             "",
-            f"Average Composite Score: {summary['avg_composite_score']:.1f}/100",
+            (
+                f"Average Composite Score: {summary['avg_composite_score']:.1f}/100"
+                if summary.get("avg_composite_score") is not None
+                else "Average Composite Score: n/a"
+            ),
             "",
             "Tier Distribution:",
-            f"  🥇 GOLD:   {summary['tier_distribution']['GOLD']} ({summary['tier_distribution']['GOLD']/summary['total']*100:.1f}%)",
-            f"  🥈 SILVER: {summary['tier_distribution']['SILVER']} ({summary['tier_distribution']['SILVER']/summary['total']*100:.1f}%)",
-            f"  🥉 BRONZE: {summary['tier_distribution']['BRONZE']} ({summary['tier_distribution']['BRONZE']/summary['total']*100:.1f}%)",
-            f"  ❌ FAIL:   {summary['tier_distribution']['FAIL']} ({summary['tier_distribution']['FAIL']/summary['total']*100:.1f}%)",
+            *(
+                f"  {emoji} {name + ':':<7} {summary['tier_distribution'][name]} ({pct(name)})"
+                for emoji, name in (
+                    ("🥇", "GOLD"), ("🥈", "SILVER"), ("🥉", "BRONZE"), ("❌", "FAIL"),
+                )
+            ),
             "",
             "=" * 80,
             "PER-PROBLEM RESULTS",
