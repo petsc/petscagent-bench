@@ -870,5 +870,165 @@ class EvaluationReportTest(unittest.TestCase):
         self.assertIn("GOLD:   0 (n/a)", text)
 
 
+class LoadsOneResultFile:
+    """Writes a single result document and reads it back through the loader."""
+
+    def _load(self, doc):
+        import json
+        import sys
+        import tempfile
+        from pathlib import Path
+
+        sys.path.insert(0, str(Path(__file__).parents[1] / "analysis"))
+        from load_results import load_records
+
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "a-run1.json").write_text(json.dumps(doc))
+            return load_records([Path(tmp)], with_sources=False)
+
+    def _doc(self, *results):
+        return {
+            "purple_model": "somepurple",
+            "judge_model": "new-judge",
+            "run_index": 1,
+            "results": list(results),
+        }
+
+
+class TheDashboardReadsTheJudgePerRecordTest(LoadsOneResultFile, unittest.TestCase):
+    """A rescored file names one judge but may hold records from two.
+
+    A narrowed rescore carries the problems it did not evaluate through from
+    the file it replays, and the top-level judge_model names only the pass that
+    last wrote the file. Reading it for every record would move an earlier
+    judge's scores onto the new judge's axis, which is the one comparison the
+    judge filter exists to make.
+    """
+
+    def test_a_carried_record_keeps_the_judge_that_scored_it(self):
+        records = self._load(self._doc(
+            {"problem_name": "darcy", "scored_by": "new-judge"},
+            {"problem_name": "heat", "scored_by": "old-judge"},
+        ))
+        self.assertEqual(
+            {r.problem: r.judge for r in records},
+            {"darcy": "new-judge", "heat": "old-judge"},
+        )
+
+    def test_a_record_without_the_stamp_falls_back_to_the_document(self):
+        # Every file written before scored_by existed. The document's judge is
+        # the only one there is, and for those records it is correct.
+        records = self._load(self._doc({"problem_name": "darcy"}))
+        self.assertEqual([r.judge for r in records], ["new-judge"])
+
+
+class OnlyTheNewestPassOfEachArmIsCountedTest(unittest.TestCase):
+    """Which files reach a mean once a rescore keeps its own record.
+
+    Counting an arm twice because it was rescored, or merging three
+    repetitions into one because they predate pass numbering, moves every
+    published number and shows nothing on the dashboard.
+    """
+
+    def load(self, tmp, *docs):
+        import json
+        import sys
+        from pathlib import Path
+
+        sys.path.insert(0, str(Path(__file__).parents[1] / "analysis"))
+        from load_results import load_records
+
+        for name, doc in docs:
+            (Path(tmp) / name).write_text(json.dumps(doc))
+        return load_records([Path(tmp)], with_sources=False)
+
+    def doc(self, judge, score, **extra):
+        return {
+            "purple_model": "somepurple",
+            "judge_model": judge,
+            "results": [{"problem_name": "darcy", "composite_score": score}],
+            **extra,
+        }
+
+    def test_a_rescore_replaces_its_predecessor_rather_than_joining_it(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            records = self.load(
+                tmp,
+                ("v-judged-by-a-s1.json", self.doc("a", 10.0, pass_index=1)),
+                ("v-judged-by-a-s2.json", self.doc("a", 90.0, pass_index=2)),
+                # Another judge's pass is a different arm, not a later pass
+                # of this one, so it survives alongside.
+                ("v-judged-by-b-s1.json", self.doc("b", 50.0, pass_index=1)),
+            )
+            self.assertEqual(
+                sorted((r.judge, r.composite_score) for r in records),
+                [("a", 90.0), ("b", 50.0)],
+            )
+
+    def test_files_written_before_passes_were_numbered_all_count(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            # Three repetitions of one arm, numbered inside one directory
+            # because that is how they were written.
+            records = self.load(
+                tmp,
+                *[(f"v-judged-by-a-run{n}.json", self.doc("a", s, run_index=n))
+                  for n, s in ((1, 10.0), (2, 20.0), (3, 30.0))],
+            )
+            self.assertEqual(sorted(r.composite_score for r in records),
+                             [10.0, 20.0, 30.0])
+            # Each is its own repetition, so none of them averages the others
+            # away.
+            self.assertEqual(len({r.replicate for r in records}), 3)
+
+
+class AnEmptySubmissionIsNeverACompileFailureTest(
+        LoadsOneResultFile, unittest.TestCase):
+    """A reply holding no code must not be charged to the compiler.
+
+    It arrives with compiles false, like a real compile failure, and that is
+    the one failure mode the benchmark cannot blame on PETSc. Earlier versions
+    recognised it by the parse error alone, so a rescore that replaced the
+    message with one of its own moved the record onto PETSc's ledger.
+    """
+
+    def a_failure(self, error, sources):
+        return {
+            "problem_name": "darcy", "compiles": False, "runs": False,
+            "tier": "FAIL", "composite_score": 0.0,
+            "generated_sources": sources,
+            "evaluation_summary": {"error": error},
+        }
+
+    def test_the_submission_decides_it_not_the_message(self):
+        for error in ("Could not parse purple agent response. Probably failed "
+                      "to generate the code.",
+                      "Replay record for DarcyFlow2D_Steady has no sources"):
+            with self.subTest(error=error):
+                records = self._load(self._doc(self.a_failure(error, [])))
+                self.assertEqual(records[0].failure_class, "No code produced")
+
+    def test_a_real_compile_failure_is_still_one(self):
+        # Code was submitted and the compiler rejected it. Nothing about this
+        # record should move, and the loader read it with_sources=False, so
+        # the empty run tree must not be mistaken for an empty submission.
+        records = self._load(self._doc(self.a_failure(
+            "compile failed: error: unknown type name 'Vecc'",
+            [{"original_name": "main.c", "source": "Vecc x;"}],
+        )))
+        self.assertEqual(records[0].sources, [])
+        self.assertEqual(records[0].failure_class, "Compile failure")
+
+    def test_a_completed_run_has_no_failure_class(self):
+        records = self._load(self._doc(
+            {"problem_name": "darcy", "compiles": True, "runs": True,
+             "composite_score": 83.9, "tier": "SILVER"}
+        ))
+        self.assertEqual(records[0].failure_class, "")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1,0 +1,398 @@
+#!/usr/bin/env python3
+"""Generate SYNTHETIC result files in the factor schema, for layout testing.
+
+This writes fake data. Nothing it produces is a benchmark result and nothing it
+produces belongs in the paper. It exists because the dashboard's variant views
+cannot be checked against the current output/, which holds a single scaffold and
+no skills: a six-variant facet grid and a contrast plot have no layout to verify
+until six variants exist. Output goes to a scratch directory, never to output/.
+
+    python analysis/make_demo_runs.py            # -> /tmp/petscbench_demo
+    python analysis/build_dashboard.py --demo    # build against it
+
+The generator models the structure the real data has: problem difficulty is the
+dominant term, variant effects are small, run-to-run noise is smaller still, and
+some problems abort before any evaluator runs.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import random
+import shutil
+from pathlib import Path
+
+DEMO_DIR = Path("/tmp/petscbench_demo")
+
+PROBLEMS = [
+    ("Advection_PDE", 1, 0.86),
+    ("Rosenbrock_banana", 2, 0.74),
+    ("Robertson_ODE", 3, 0.68),
+    ("scatter_vecmpi", 4, 0.55),
+    ("DarcyFlow2D_Steady", 5, 0.36),
+    ("NS2D_FV_Implicit", 6, 0.18),
+    ("GradShafranov", 7, 0.44),
+]
+
+# (variant_id, scaffold, base_model, skills, n_subagents, effect)
+# `effect` shifts the latent quality in [0,1] space. The set is chosen so every
+# factor has at least one clean one-factor contrast running through it.
+VARIANTS = [
+    ("single-claude",        "single",     "anthropic/claudeopus46", [],                             1, 0.00),
+    ("single-claude-skill",  "single",     "anthropic/claudeopus46", ["petsc-api", "solver-choice"], 1, 0.07),
+    ("multi4-claude",        "multiagent", "anthropic/claudeopus46", [],                             4, 0.05),
+    ("multi4-claude-skill",  "multiagent", "anthropic/claudeopus46", ["petsc-api", "solver-choice"], 4, 0.13),
+    ("multi8-claude",        "multiagent", "anthropic/claudeopus46", [],                             8, 0.06),
+    ("single-gpt",           "single",     "openai/gpt52",           [],                             1, -0.04),
+]
+
+JUDGES = ["anthropic/claudeopus46", "openai/gpt52"]
+RUNS = (1, 2, 3)
+
+# Declared test cases per problem, shaped like data/*.json: one invocation for
+# most problems and six for GradShafranov, one of them on four ranks. The
+# arguments are abbreviated, but the long ones are kept long because they are
+# what the drill-down has to lay out.
+CASES = {
+    "Advection_PDE": [("-ts_type rk -ts_rk_type 4", 1)],
+    "Rosenbrock_banana": [("-tao_view -tao_monitor", 1)],
+    "Robertson_ODE": [("-ts_type cn -ts_time_step 1e-7 -ts_adapt_type basic", 1)],
+    "scatter_vecmpi": [("-N 10", 3)],
+    "DarcyFlow2D_Steady": [("", 1)],
+    "NS2D_FV_Implicit": [("-ts_type beuler", 1)],
+    "GradShafranov": [
+        ("-ksp_rtol 1e-12", 1),
+        ("-da_grid_x 129 -da_grid_y 129 -ksp_rtol 1e-12", 1),
+        ("-da_grid_x 129 -da_grid_y 129 -ksp_rtol 1e-12", 4),
+        ("-cf_A -0.05 -cf_c 0.0134505,-0.3265206,0.0036974,0,0,0 -cf_xmin 0.142 "
+         "-cf_xmax 1.858 -cf_ymin -1.716 -cf_ymax 1.716 -ksp_rtol 1e-12", 1),
+        ("-cf_A -0.155 -cf_c 0.1083766,0.8896016,-1.0385641,0,0,0 -cf_xmin 0.648 "
+         "-cf_xmax 1.352 -cf_ymin -0.65824 -cf_ymax 0.65824 -ksp_rtol 1e-12", 1),
+        ("-cf_c 0.0666504,-0.1954979,-0.0511055,0,0,0 -cf_ymin -0.5984 "
+         "-cf_ymax 0.5984 -ksp_rtol 1e-12", 1),
+    ],
+}
+
+CATEGORIES = ["correctness", "performance", "code_quality", "algorithm", "petsc"]
+WEIGHTS = {"correctness": 0.35, "performance": 0.15, "code_quality": 0.15,
+           "algorithm": 0.15, "petsc": 0.20}
+
+# Evaluator names as the harness records them, so a demo drill-down reads like
+# a real one and a failed execution gate names the evaluator that fails.
+GATES = ["compilation", "execution", "memory_safety", "api_usage"]
+METRICS = ["numerical_accuracy", "execution_time"]
+QUALITY = ["error_handling", "parallel_awareness", "readability", "code_style",
+           "documentation", "algorithm_appropriateness", "solver_choice",
+           "petsc_best_practices"]
+
+SEGFAULT = """[0]PETSC ERROR: ------------------------------------------------------------------------
+[0]PETSC ERROR: Caught signal number 11 SEGV: Segmentation Violation, probably memory access out of range
+[0]PETSC ERROR: Try option -start_in_debugger or -on_error_attach_debugger
+"""
+
+PETSC_ERR = """[0]PETSC ERROR: --------------------- Error Message --------------------------------------
+[0]PETSC ERROR: Object is in wrong state
+[0]PETSC ERROR: Matrix is missing diagonal entry 0
+[0]PETSC ERROR: See https://petsc.org/release/faq/ for trouble shooting.
+"""
+
+COMPILE_ERR = """error: too few arguments to function call, expected 6, have 5
+  TSSetRHSFunction(ts, NULL, RHSFunction, &user);
+  ^
+1 error generated.
+make: *** [solution] Error 1
+"""
+
+SOURCE_TMPL = """static char help[] = "{problem}: generated by {variant}.\\n";
+
+#include <petscts.h>
+#include <petscdmda.h>
+
+typedef struct {{
+  PetscReal nu;
+  PetscInt  n;
+}} AppCtx;
+
+static PetscErrorCode RHSFunction(TS ts, PetscReal t, Vec U, Vec F, void *ctx)
+{{
+  AppCtx            *user = (AppCtx *)ctx;
+  const PetscScalar *u;
+  PetscScalar       *f;
+  PetscInt           i, n;
+
+  PetscFunctionBeginUser;
+  PetscCall(VecGetArrayRead(U, &u));
+  PetscCall(VecGetArray(F, &f));
+  PetscCall(VecGetLocalSize(U, &n));
+  for (i = 1; i < n - 1; i++) f[i] = user->nu * (u[i - 1] - 2.0 * u[i] + u[i + 1]);
+  f[0] = f[n - 1] = 0.0;
+  PetscCall(VecRestoreArrayRead(U, &u));
+  PetscCall(VecRestoreArray(F, &f));
+  PetscFunctionReturn(PETSC_SUCCESS);
+}}
+
+int main(int argc, char **argv)
+{{
+  TS       ts;
+  Vec      u;
+  AppCtx   user = {{.nu = 0.01, .n = {n}}};
+
+  PetscFunctionBeginUser;
+  PetscCall(PetscInitialize(&argc, &argv, NULL, help));
+  PetscCall(VecCreateSeq(PETSC_COMM_SELF, user.n, &u));
+  PetscCall(TSCreate(PETSC_COMM_WORLD, &ts));
+  PetscCall(TSSetProblemType(ts, TS_NONLINEAR));
+  PetscCall(TSSetRHSFunction(ts, NULL, RHSFunction, &user));
+  PetscCall(TSSetType(ts, TSRK));
+  PetscCall(TSSetMaxTime(ts, 1.0));
+  PetscCall(TSSetFromOptions(ts));
+  PetscCall(TSSolve(ts, u));
+  PetscCall(VecDestroy(&u));
+  PetscCall(TSDestroy(&ts));
+  PetscCall(PetscFinalize());
+  return 0;
+}}
+"""
+
+
+def slug(name: str) -> str:
+    return "".join(c if c.isalnum() or c in "-_" else "_" for c in name)
+
+
+def tier_for(score: float) -> str:
+    if score >= 85:
+        return "GOLD"
+    if score >= 70:
+        return "SILVER"
+    if score >= 50:
+        return "BRONZE"
+    return "FAIL"
+
+
+def rep_dir(out_dir: Path, run: int) -> Path:
+    """Where repetition `run` writes, mirroring run_argo_grid.rep_dir.
+
+    A repetition generates its own code, and one variant's submissions share
+    a directory within an output tree, so each repetition needs its own tree.
+    """
+    return out_dir if run == 1 else out_dir.with_name(f"{out_dir.name}-rep{run}")
+
+
+def build(out_dir: Path, seed: int) -> int:
+    rng = random.Random(seed)
+    for run in RUNS:
+        d = rep_dir(out_dir, run)
+        if d.exists():
+            shutil.rmtree(d)
+        d.mkdir(parents=True)
+
+    written = 0
+    for vid, scaffold, base_model, skills, n_sub, effect in VARIANTS:
+        for judge in JUDGES:
+            # The judge is a real offset in this benchmark, not noise.
+            judge_shift = 0.06 if judge.startswith("anthropic") else -0.06
+            for run in RUNS:
+                results = []
+                sources = []
+                for problem, pid, difficulty in PROBLEMS:
+                    latent = difficulty + effect + judge_shift + rng.gauss(0, 0.045)
+                    declared = CASES[problem]
+                    fails = rng.random() > min(0.97, latent + 0.22)
+
+                    # A failure is one of two kinds, and they reach the
+                    # dashboard by different routes. A compile failure throws
+                    # out of the harness, so the record carries an error string,
+                    # null evaluation details and no cases. A runtime failure
+                    # does not throw any more: the case is recorded, the
+                    # execution gate fails on it, and the composite is zeroed by
+                    # rule with no error text anywhere.
+                    if fails and rng.random() < 0.42:
+                        results.append({
+                            "problem_id": pid,
+                            "problem_name": problem,
+                            "composite_score": 0.0,
+                            "tier": "FAIL",
+                            "compiles": False,
+                            "runs": False,
+                            "category_scores": {},
+                            "cli_args": declared[0][0],
+                            "cases": [],
+                            "time_used_sec": round(rng.uniform(40, 260), 2),
+                            "execution_time_sec": 0.0,
+                            "total_tokens": int(rng.uniform(9000, 46000) * (n_sub ** 0.5)),
+                            "evaluation_summary": {
+                                "gates_passed": None,
+                                "gates_total": None,
+                                "error": COMPILE_ERR,
+                            },
+                            "evaluation_details": None,
+                        })
+                        continue
+
+                    # Which case breaks is not uniform: the later GradShafranov
+                    # cases are the stiff ones, so a run that gets anywhere
+                    # usually dies late rather than on case 0.
+                    broken = rng.choice(declared[len(declared) // 2:]) if fails else None
+                    cases = []
+                    for i, (args, nsize) in enumerate(declared):
+                        ok = (args, nsize) != broken
+                        cases.append({
+                            "index": i,
+                            "args": args,
+                            "nsize": nsize,
+                            "runs": ok,
+                            "stdout": "",
+                            "stderr": "" if ok else (SEGFAULT if rng.random() < 0.38
+                                                     else PETSC_ERR),
+                            "execution_time_sec": round(rng.uniform(0.1, 9.0), 3) if ok else None,
+                            "valgrind_output": None,
+                        })
+
+                    if fails:
+                        # Gates run first and a failure stops the pipeline, so
+                        # the record holds gate rows only and no categories.
+                        bad = next(c for c in cases if not c["runs"])
+                        gate_rows = []
+                        for g in GATES:
+                            if g == "execution":
+                                head = bad["stderr"].splitlines()[1][:120]
+                                gate_rows.append({
+                                    "name": g, "type": "gate", "method": "deterministic",
+                                    "passed": False, "score": None, "confidence": 1.0,
+                                    "feedback": f"Execution failed on case {bad['index']}: {head}",
+                                })
+                            else:
+                                gate_rows.append({
+                                    "name": g, "type": "gate", "method": "deterministic",
+                                    "passed": True, "score": None, "confidence": 1.0,
+                                    "feedback": f"{g}: ok",
+                                })
+                        results.append({
+                            "problem_id": pid,
+                            "problem_name": problem,
+                            "composite_score": 0.0,
+                            "tier": "FAIL",
+                            "compiles": True,
+                            "runs": False,
+                            "category_scores": {},
+                            "cli_args": cases[0]["args"],
+                            "cases": cases,
+                            "time_used_sec": round(rng.uniform(40, 260), 2),
+                            "execution_time_sec": cases[0]["execution_time_sec"] or 0.0,
+                            "total_tokens": int(rng.uniform(9000, 46000) * (n_sub ** 0.5)),
+                            "evaluation_summary": {
+                                "gates_passed": len(GATES) - 1,
+                                "gates_total": len(GATES),
+                                "error": None,
+                            },
+                            "evaluation_details": gate_rows,
+                        })
+                        continue
+
+                    cats = {}
+                    for c in CATEGORIES:
+                        v = latent * 100 + rng.gauss(0, 7)
+                        cats[c] = round(max(0.0, min(100.0, v)), 2)
+                    composite = round(sum(cats[c] * WEIGHTS[c] for c in CATEGORIES), 2)
+
+                    details = []
+                    for g in GATES:
+                        details.append({"name": g, "type": "gate", "method": "deterministic",
+                                        "passed": True, "score": None, "confidence": None,
+                                        "feedback": f"{g}: ok"})
+                    for m in METRICS:
+                        details.append({"name": m, "type": "metric", "method": "measured",
+                                        "passed": None, "score": round(rng.uniform(40, 99), 1),
+                                        "confidence": None, "feedback": f"{m} within budget"})
+                    for q in QUALITY:
+                        details.append({"name": q, "type": "quality", "method": "llm_judge",
+                                        "passed": None, "score": round(max(0, min(100, latent * 100 + rng.gauss(0, 11))), 1),
+                                        "confidence": round(rng.uniform(0.6, 0.95), 2),
+                                        "feedback": f"{q}: the submission handles this adequately; "
+                                                    f"see the {problem} discretisation for context."})
+
+                    src = SOURCE_TMPL.format(problem=problem, variant=vid, n=pid * 32)
+                    sources.append((problem, "solution.c", src))
+
+                    results.append({
+                        "problem_id": pid,
+                        "problem_name": problem,
+                        "composite_score": composite,
+                        "tier": tier_for(composite),
+                        "compiles": True,
+                        "runs": True,
+                        "category_scores": cats,
+                        "cli_args": cases[0]["args"],
+                        "cases": cases,
+                        "time_used_sec": round(rng.uniform(55, 340), 2),
+                        # The scalar keeps its harness meaning, the runtime of
+                        # the first case. Cases of different sizes have no
+                        # meaningful mean.
+                        "execution_time_sec": cases[0]["execution_time_sec"],
+                        "total_tokens": int(rng.uniform(12000, 52000) * (n_sub ** 0.5)),
+                        "evaluation_summary": {
+                            "gates_passed": 4, "gates_total": 4, "error": None,
+                        },
+                        "evaluation_details": details,
+                    })
+
+                rdir = rep_dir(out_dir, run)
+                stem = f"{vid}-judged-by-{slug(judge)}-s1"
+                doc = {
+                    "agent": vid,
+                    "purple": {
+                        "variant_id": vid,
+                        "scaffold": scaffold,
+                        "base_model": base_model,
+                        "skills": skills,
+                        "n_subagents": n_sub,
+                    },
+                    "purple_model": base_model,
+                    "judge_model": judge,
+                    "pass_index": 1,
+                    "submissions": vid,
+                    "harness": {"git_rev": "demo0000", "dirty": False},
+                    "env": {"petsc_rev": "v3.24.0", "arch": "arch-linux-c-opt"},
+                    "summary": {"total": len(PROBLEMS)},
+                    "results": results,
+                }
+                (rdir / f"{stem}.json").write_text(json.dumps(doc, indent=2))
+
+                # One tree per variant, shared by every judge, as the green
+                # agent writes it. The second judge leaves it alone, so the
+                # code under it is the code the first judge scored.
+                sdir = rdir / vid
+                if not sdir.exists():
+                    manifest = []
+                    for problem, fname, text in sources:
+                        pdir = sdir / slug(problem)
+                        pdir.mkdir(parents=True, exist_ok=True)
+                        (pdir / fname).write_text(text, encoding="utf-8")
+                        manifest.append({
+                            "problem_name": problem,
+                            "filename": f"{slug(problem)}/{fname}",
+                            "sha256": hashlib.sha256(text.encode()).hexdigest(),
+                        })
+                    sdir.mkdir(parents=True, exist_ok=True)
+                    (sdir / "manifest.json").write_text(
+                        json.dumps(manifest, indent=2))
+                written += 1
+    return written
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--out", type=Path, default=DEMO_DIR)
+    ap.add_argument("--seed", type=int, default=11)
+    args = ap.parse_args()
+    n = build(args.out, args.seed)
+    dirs = " ".join(str(rep_dir(args.out, r)) for r in RUNS)
+    print(f"wrote {n} synthetic result files to {dirs}")
+    print(f"{len(VARIANTS)} variants x {len(JUDGES)} judges x {len(RUNS)} runs "
+          f"x {len(PROBLEMS)} problems")
+
+
+if __name__ == "__main__":
+    main()

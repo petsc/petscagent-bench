@@ -1,0 +1,1039 @@
+<title>PETScAgent-Bench Results</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap">
+<style>
+/* Three things, top to bottom: a scoreboard of agents, a grid of agent by
+   problem you can click, and the detail for whatever you clicked. Everything
+   else that used to be here was a statistics card, and the statistics were
+   answering a question nobody had asked. The full per-run table is still one
+   click away, because "show me the actual numbers" is the whole point. */
+:root {
+  --plane: #f4f5f3;
+  --surface: #fcfcfb;
+  --ink: #0b0b0b;
+  --ink-2: #52514e;
+  --ink-muted: #898781;
+  --grid: #e1e0d9;
+  --hair: rgba(11, 11, 11, 0.10);
+  --hair-strong: rgba(11, 11, 11, 0.18);
+  --wash: rgba(42, 120, 214, 0.07);
+  --accent: #2a78d6;
+
+  /* Sequential blue, 100 -> 700. The grid is the only thing that needs a
+     magnitude ramp now, so this is the only scale on the page. */
+  --seq-100: #cde2fb; --seq-200: #9ec5f4; --seq-300: #6da7ec; --seq-400: #3987e5;
+  --seq-500: #256abf; --seq-600: #184f95; --seq-700: #0d366b;
+  --seq-on-light: #0b0b0b;
+  --seq-on-dark: #ffffff;
+
+  /* Status roles always ship with an icon or a word, never hue alone. */
+  --status-good: #0ca30c;
+  --status-warning: #fab219;
+  --status-critical: #d03b3b;
+
+  --font-sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --plane: #0d0d0d; --surface: #1a1a19; --ink: #ffffff; --ink-2: #c3c2b7;
+    --ink-muted: #898781; --grid: #2c2c2a;
+    --hair: rgba(255, 255, 255, 0.10); --hair-strong: rgba(255, 255, 255, 0.20);
+    --wash: rgba(57, 135, 229, 0.12); --accent: #3987e5;
+    --seq-on-light: #0b0b0b; --seq-on-dark: #ffffff;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --plane: #0d0d0d; --surface: #1a1a19; --ink: #ffffff; --ink-2: #c3c2b7;
+  --ink-muted: #898781; --grid: #2c2c2a;
+  --hair: rgba(255, 255, 255, 0.10); --hair-strong: rgba(255, 255, 255, 0.20);
+  --wash: rgba(57, 135, 229, 0.12); --accent: #3987e5;
+  --seq-on-light: #0b0b0b; --seq-on-dark: #ffffff;
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--plane); color: var(--ink);
+  font-family: var(--font-sans); font-size: 14px; line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+h1, h2 { margin: 0; font-weight: 600; text-wrap: balance; }
+p { margin: 0; }
+.wrap { max-width: 1180px; margin: 0 auto; padding: 0 20px 56px; }
+
+/* ---- header -------------------------------------------------------------- */
+.topbar {
+  position: sticky; top: 0; z-index: 20; background: var(--plane);
+  border-bottom: 1px solid var(--hair); padding: 14px 0 12px; margin-bottom: 20px;
+}
+.titlerow { display: flex; flex-wrap: wrap; gap: 6px 16px; align-items: baseline; }
+h1 { font-size: 19px; letter-spacing: -0.01em; }
+.prov { font-family: var(--font-mono); font-size: 11.5px; color: var(--ink-muted); }
+.controls { display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: center; margin-top: 11px; }
+.ctl { display: flex; gap: 8px; align-items: center; }
+.ctl > .lab { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-muted); }
+.seg { display: inline-flex; border: 1px solid var(--hair-strong); border-radius: 8px; overflow: hidden; }
+.seg button {
+  appearance: none; border: 0; background: transparent; cursor: pointer;
+  font-family: var(--font-sans); font-size: 12px; color: var(--ink-2);
+  padding: 5px 11px; min-height: 30px; border-left: 1px solid var(--hair);
+}
+.seg button:first-child { border-left: 0; }
+.seg button:hover { background: var(--wash); }
+.seg button[aria-pressed="true"] { background: var(--accent); color: #fff; font-weight: 600; }
+.seg button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.toggle {
+  appearance: none; background: transparent; border: 1px solid var(--hair-strong);
+  border-radius: 8px; font-family: var(--font-sans); font-size: 12px; color: var(--ink-2);
+  padding: 6px 11px; min-height: 30px; cursor: pointer;
+}
+.toggle:hover { background: var(--wash); }
+.toggle[aria-pressed="true"] { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+/* Agent filter chips. */
+.chiprow { display: flex; flex-wrap: wrap; gap: 7px; margin-bottom: 18px; }
+.chip {
+  display: inline-flex; align-items: center; gap: 7px; cursor: pointer;
+  border: 1px solid var(--hair-strong); border-radius: 999px; background: var(--surface);
+  padding: 5px 12px; font-size: 12.5px; min-height: 30px;
+}
+.chip:hover { background: var(--wash); }
+.chip[aria-pressed="false"] { opacity: 0.45; }
+.chip .n { font-family: var(--font-mono); font-size: 11px; color: var(--ink-muted); }
+.chip .warn { color: var(--status-warning); font-size: 11px; font-family: var(--font-mono); }
+
+/* ---- summary numbers ----------------------------------------------------- */
+.summary { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 20px; }
+.sum {
+  flex: 1 1 150px; background: var(--surface); border: 1px solid var(--hair);
+  border-radius: 10px; padding: 12px 14px;
+}
+.sum .v { font-size: 25px; font-weight: 600; font-variant-numeric: tabular-nums; line-height: 1.15; }
+.sum .k { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-muted); }
+.sum .f { font-size: 11.5px; color: var(--ink-2); margin-top: 2px; }
+
+/* ---- cards --------------------------------------------------------------- */
+.card {
+  background: var(--surface); border: 1px solid var(--hair); border-radius: 12px;
+  padding: 16px 18px 18px; margin-bottom: 18px;
+}
+.card > header { margin-bottom: 12px; }
+.card h2 { font-size: 15px; }
+.note { font-size: 12.5px; color: var(--ink-2); margin-top: 4px; max-width: 86ch; }
+.cardhead { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: flex-start; justify-content: space-between; }
+
+/* ---- tables -------------------------------------------------------------- */
+.tablewrap { overflow-x: auto; }
+table.data { width: 100%; border-collapse: collapse; font-size: 12.5px; white-space: nowrap; }
+table.data th, table.data td { padding: 7px 11px; border-bottom: 1px solid var(--hair); text-align: right; }
+table.data th:first-child, table.data td:first-child { text-align: left; }
+table.data thead th {
+  font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em;
+  color: var(--ink-muted); font-weight: 600; position: sticky; top: 0; background: var(--surface);
+}
+table.data td { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+table.data td:first-child { font-family: var(--font-sans); }
+table.data tbody tr:hover { background: var(--wash); }
+table.data th.rule, table.data td.rule { border-left: 1px solid var(--hair-strong); }
+table.data th .thw {
+  color: var(--ink-muted); font-weight: 400; font-size: 10px; margin-left: 5px;
+  text-transform: none; letter-spacing: 0;
+}
+.dim { color: var(--ink-muted); }
+
+/* ---- grid ---------------------------------------------------------------- */
+.gridwrap { overflow-x: auto; }
+.gridtable { display: grid; gap: 2px; min-width: 560px; }
+.g-h {
+  font-size: 10.5px; color: var(--ink-muted); text-transform: uppercase;
+  letter-spacing: 0.05em; text-align: center; align-self: end; padding-bottom: 4px;
+  overflow-wrap: anywhere;
+  border: 0; background: none; font-family: inherit; cursor: pointer;
+}
+.g-h.on { color: var(--ink); font-weight: 700; }
+.g-h:hover { color: var(--ink); text-decoration: underline; }
+.g-r { font-size: 12.5px; display: flex; align-items: center; padding-right: 8px; }
+.g-r.on { color: var(--ink); font-weight: 700; }
+.cell {
+  border: 0; cursor: pointer; font-family: var(--font-mono); font-size: 12.5px;
+  font-variant-numeric: tabular-nums; border-radius: 5px; min-height: 36px;
+  display: flex; align-items: center; justify-content: center; appearance: none;
+}
+.cell:hover { outline: 2px solid var(--accent); outline-offset: -2px; }
+.cell[aria-pressed="true"] { outline: 3px solid var(--ink); outline-offset: -3px; font-weight: 700; }
+.cell .sub { font-size: 9.5px; opacity: 0.75; margin-left: 4px; }
+.ramp { display: flex; align-items: center; gap: 7px; margin-top: 11px; font-size: 11px; color: var(--ink-muted); }
+.ramp i { width: 22px; height: 9px; border-radius: 2px; display: inline-block; }
+
+/* ---- detail -------------------------------------------------------------- */
+.ctx { font-family: var(--font-mono); font-size: 11.5px; color: var(--ink-muted); }
+.ctx .who { color: var(--ink); font-weight: 700; font-size: 13px; }
+.runlist { display: flex; flex-direction: column; gap: 8px; }
+.ghead {
+  display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+  padding: 6px 2px 2px; border-top: 1px solid var(--hair); margin-top: 6px;
+}
+.ghead:first-child { border-top: 0; margin-top: 0; }
+.ghead .gname { font-weight: 700; font-size: 13.5px; }
+.ghead .gmeta { font-family: var(--font-mono); font-size: 11.5px; color: var(--ink-muted); }
+.ghead.on .gname { text-decoration: underline; text-underline-offset: 3px; }
+.run { border: 1px solid var(--hair); border-radius: 9px; background: var(--plane); overflow: hidden; }
+.run > summary {
+  cursor: pointer; list-style: none; padding: 9px 13px; display: flex;
+  flex-wrap: wrap; gap: 6px 11px; align-items: center;
+}
+.run > summary::-webkit-details-marker { display: none; }
+.run > summary:hover { background: var(--wash); }
+.run .chev { color: var(--ink-muted); font-family: var(--font-mono); }
+.run[open] .chev { transform: rotate(90deg); display: inline-block; }
+.run .rname { font-weight: 600; }
+.run .rmeta { font-family: var(--font-mono); font-size: 11.5px; color: var(--ink-muted); }
+.run .rscore { margin-left: auto; font-family: var(--font-mono); font-weight: 600; font-variant-numeric: tabular-nums; }
+.run .body { padding: 2px 13px 14px; border-top: 1px solid var(--hair); }
+.pill {
+  font-size: 10.5px; font-weight: 600; letter-spacing: 0.03em; border-radius: 999px;
+  padding: 2px 8px; border: 1px solid var(--hair-strong); display: inline-flex; gap: 4px; align-items: center;
+}
+.pill.pass { color: var(--status-good); border-color: currentColor; }
+.pill.fail { color: var(--status-critical); border-color: currentColor; }
+
+/* The weighted rollup that made this run's composite. The contributions sum to
+   the total it prints, which is the reason the row is here. */
+.metrics { margin: 11px 0 13px; display: grid; gap: 3px; }
+.mrow { display: grid; grid-template-columns: 102px 1fr 36px 46px 46px; gap: 9px; align-items: center; font-size: 11.5px; }
+.mhead { font-size: 10px; color: var(--ink-muted); text-transform: uppercase; letter-spacing: 0.06em; }
+.mname { color: var(--ink-2); }
+.mtrack { height: 7px; border-radius: 4px; background: var(--grid); overflow: hidden; }
+.mfill { display: block; height: 100%; border-radius: 4px; }
+.mval, .mcon { font-family: var(--font-mono); font-variant-numeric: tabular-nums; text-align: right; }
+.mw { font-family: var(--font-mono); font-size: 10.5px; color: var(--ink-muted); text-align: right; }
+.mcon { font-weight: 600; }
+.mtot { border-top: 1px solid var(--hair); padding-top: 5px; margin-top: 2px; }
+.mtot .mname { font-weight: 600; color: var(--ink); }
+
+/* Every declared test case, one row per invocation of the binary. The
+   execution gate fails the whole run when any single case fails, so the
+   failing case has to be nameable or the zero cannot be read. */
+.cases { margin: 11px 0 13px; display: grid; gap: 3px; }
+.crow { display: grid; grid-template-columns: 34px 1fr 46px 52px 58px; gap: 9px; align-items: center; font-size: 11.5px; }
+.ccap { font-size: 10px; color: var(--ink-muted); text-transform: uppercase; letter-spacing: 0.06em; }
+.cidx { font-family: var(--font-mono); color: var(--ink-muted); }
+.cargs { font-family: var(--font-mono); color: var(--ink-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cargs.none { color: var(--ink-muted); font-style: italic; }
+.cnum { font-family: var(--font-mono); font-variant-numeric: tabular-nums; text-align: right; color: var(--ink-muted); }
+.cstat { justify-self: end; }
+.caseerr { margin: 1px 0 7px; max-height: 190px; }
+
+.abortbanner {
+  display: flex; gap: 8px; align-items: flex-start; font-size: 12.5px;
+  color: var(--ink-2); margin: 10px 0 8px; max-width: 86ch;
+}
+.errbox, .cliline {
+  font-family: var(--font-mono); font-size: 11.5px; color: var(--ink-2);
+  background: var(--plane); border: 1px solid var(--hair); border-radius: 6px;
+  padding: 8px 10px; margin: 0 0 10px; overflow-x: auto; white-space: pre; max-height: 260px;
+}
+.errnote { font-size: 11.5px; color: var(--ink-muted); margin-bottom: 10px; }
+.evrow { border-top: 1px solid var(--hair); padding: 8px 0; }
+.evrow:first-of-type { border-top: 0; }
+.evgroup { margin-top: 12px; }
+.evghead {
+  display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline;
+  padding: 5px 0 3px; border-bottom: 1px solid var(--hair);
+}
+.evgname { font-size: 12.5px; font-weight: 600; }
+.evgval { font-family: var(--font-mono); font-size: 12px; }
+.evgnote { font-size: 11.5px; color: var(--ink-muted); }
+.evgroup .evrow:first-of-type { border-top: 0; }
+.evhead { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; }
+.evname { font-family: var(--font-mono); font-size: 12px; font-weight: 500; }
+.evscore { font-family: var(--font-mono); font-size: 11.5px; color: var(--ink-muted); }
+.evfb { font-size: 12.5px; color: var(--ink-2); max-width: 82ch; margin-top: 3px; }
+
+/* ---- source -------------------------------------------------------------- */
+.src { border: 1px solid var(--hair); border-radius: 7px; margin: 10px 0; background: var(--surface); }
+.src > summary { cursor: pointer; list-style: none; padding: 7px 11px; display: flex; gap: 9px; align-items: center; }
+.src > summary::-webkit-details-marker { display: none; }
+.src > summary:hover { background: var(--wash); }
+.sname { font-family: var(--font-mono); font-size: 12px; font-weight: 500; }
+.smeta { font-family: var(--font-mono); font-size: 11px; color: var(--ink-muted); }
+.copy {
+  margin-left: auto; appearance: none; border: 1px solid var(--hair-strong); background: transparent;
+  border-radius: 6px; font-family: var(--font-sans); font-size: 11px; color: var(--ink-2);
+  padding: 3px 9px; cursor: pointer;
+}
+.copy:hover { background: var(--wash); }
+.code { font-family: var(--font-mono); font-size: 11.5px; overflow-x: auto; padding: 8px 0 10px; max-height: 480px; }
+.cline { display: flex; white-space: pre; }
+.ln { width: 46px; flex: none; text-align: right; padding-right: 12px; color: var(--ink-muted); user-select: none; }
+.lt { white-space: pre; padding-right: 14px; color: var(--ink-2); }
+
+.empty { font-size: 12.5px; color: var(--ink-muted); padding: 10px 0; }
+.foot { font-size: 11.5px; color: var(--ink-muted); font-family: var(--font-mono); padding-top: 6px; }
+.foot div { margin-top: 2px; }
+
+@media (max-width: 720px) {
+  .sum .v { font-size: 21px; }
+  .mrow { grid-template-columns: 86px 1fr 32px 40px 42px; gap: 6px; }
+}
+</style>
+
+<div class="wrap">
+  <header class="topbar">
+    <div class="titlerow">
+      <h1>PETScAgent-Bench Results</h1>
+      <span class="prov" id="prov"></span>
+    </div>
+    <div class="controls">
+      <div class="ctl"><span class="lab">Judge</span><div class="seg" role="group" id="judgeseg"></div></div>
+      <div class="ctl"><span class="lab">Grid shows</span><div class="seg" role="group" id="measureseg"></div></div>
+      <button class="toggle" type="button" id="tabletoggle" aria-pressed="false">All runs table</button>
+    </div>
+  </header>
+
+  <div class="chiprow" id="chiprow"></div>
+
+  <div class="summary" id="summary"></div>
+
+  <section class="card">
+    <header>
+      <h2>Agents</h2>
+      <p class="note">One row per agent. Compiled and ran are counted over submissions, so a
+      submission scored by both judges counts once. The score columns are means over every run
+      including the ones that scored zero, which is why they sit well below the mean of scored
+      runs above.</p>
+    </header>
+    <div class="tablewrap"><table class="data" id="scoreboard"></table></div>
+  </section>
+
+  <section class="card">
+    <div class="cardhead">
+      <header>
+        <h2>By problem</h2>
+        <p class="note" id="gridnote"></p>
+      </header>
+    </div>
+    <div class="gridwrap"><div class="gridtable" id="grid"></div></div>
+    <div class="ramp" id="ramp"></div>
+  </section>
+
+  <section class="card">
+    <header>
+      <h2>Detail</h2>
+      <p class="ctx" id="detailctx"></p>
+    </header>
+    <div class="runlist" id="runlist"></div>
+  </section>
+
+  <section class="card" id="tablecard" hidden>
+    <header>
+      <h2>All runs</h2>
+      <p class="note">Every record in the current filter, one row per problem per run per judge.
+      The five ruled columns are the metrics the composite is weighted from. A run that never
+      reached a judge has no metrics and shows em dashes rather than zeros.</p>
+    </header>
+    <div class="tablewrap"><table class="data" id="datatable"></table></div>
+  </section>
+
+  <footer class="foot" id="foot"></footer>
+</div>
+
+<script type="application/json" id="payload">__PAYLOAD__</script>
+<script>
+(function () {
+  "use strict";
+  const DATA = JSON.parse(document.getElementById("payload").textContent);
+  const VARIANTS = DATA.variants, JUDGES = DATA.judges, PROBLEMS = DATA.problems;
+  // Repetitions of an arm. The label is the directory each was written to,
+  // so a run can be traced back to its files.
+  const REPLICATES = DATA.replicates || [];
+  const CATS = DATA.categories;
+  const SEQ = ["--seq-100", "--seq-200", "--seq-300", "--seq-400", "--seq-500", "--seq-600", "--seq-700"];
+  // "PETSc usage" rather than "PETSc practice": the category averages three
+  // evaluators, one of which is named petsc_best_practices and prints a few
+  // rows below it. Two near-identical names beside two different numbers read
+  // as a contradiction.
+  const CAT_LABELS = {
+    correctness: "Correctness", performance: "Performance", code_quality: "Code quality",
+    algorithm: "Algorithm", petsc: "PETSc usage"
+  };
+  const EVAL_CAT = DATA.evalCategory || {};
+  // What a grid cell can show. `score` and the five metrics are 0-100 means;
+  // `ran` is a fraction of submissions, so it carries its own scale and format.
+  const MEASURES = [{ key: "score", label: "Score" }, { key: "ran", label: "Ran" }]
+    .concat(CATS.map((c) => ({ key: c, label: CAT_LABELS[c] || c, cat: true })));
+
+  let judge = "all";
+  let measure = "score";
+  let active = new Set(VARIANTS.map((_, i) => i));
+  let selection = null;      // {v, p}
+  let showTable = false;
+
+  const css = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+  const fx = (x, n) => (x === null || x === undefined || Number.isNaN(x) ? "—" : x.toFixed(n));
+  const pct = (x) => (x === null ? "—" : Math.round(x * 100) + "%");
+  const el = (tag, cls, text) => {
+    const n = document.createElement(tag);
+    if (cls) n.className = cls;
+    if (text !== undefined) n.textContent = text;   // labels are untrusted data
+    return n;
+  };
+  const mean = (xs) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null);
+
+  // Visible agents, best mean first. The scoreboard, the grid rows and the
+  // detail panel's default all read this, so the three never disagree about
+  // which agent is on top.
+  function shown() {
+    return VARIANTS.map((_, i) => i).filter((i) => active.has(i)).sort((a, b) => {
+      const ma = mean(DATA.rows.filter((r) => r.v === a && inJudge(r)).map((r) => r.s));
+      const mb = mean(DATA.rows.filter((r) => r.v === b && inJudge(r)).map((r) => r.s));
+      return (mb === null ? -1 : mb) - (ma === null ? -1 : ma);
+    });
+  }
+
+  const inJudge = (r) => judge === "all" || JUDGES[r.j].id === judge;
+  const slice = () => DATA.rows.filter((r) => active.has(r.v) && inJudge(r));
+  // Rows for one agent on one problem, ignoring the chip filter, because the
+  // detail panel must still fill when its agent has just been hidden.
+  const cellRows = (v, p) => DATA.rows.filter((r) => r.v === v && r.p === p && inJudge(r));
+
+  // A submission is one attempt: agent, problem, run index. Two judges score
+  // the same submission, so counting records would double every compile and
+  // every execution.
+  function submissions(rows) {
+    const seen = new Map();
+    for (const r of rows) {
+      const k = r.v + "/" + r.p + "/" + r.r;
+      if (!seen.has(k)) seen.set(k, r);
+    }
+    return [...seen.values()];
+  }
+
+  function seqStep(t) {
+    const i = Math.min(SEQ.length - 1, Math.max(0, Math.round(t * (SEQ.length - 1))));
+    return { varName: SEQ[i], ink: i >= 3 ? css("--seq-on-dark") : css("--seq-on-light") };
+  }
+
+  /* ---- chrome ------------------------------------------------------------ */
+  function segment(host, opts, get, set) {
+    host.replaceChildren();
+    for (const o of opts) {
+      const b = el("button", null, o.label);
+      b.type = "button";
+      b.setAttribute("aria-pressed", String(get() === o.key));
+      b.addEventListener("click", () => { set(o.key); renderAll(); });
+      host.appendChild(b);
+    }
+  }
+
+  function renderChrome() {
+    segment(document.getElementById("judgeseg"),
+      [{ key: "all", label: "Both" }].concat(JUDGES.map((j) => ({ key: j.id, label: j.label }))),
+      () => judge, (k) => { judge = k; });
+    segment(document.getElementById("measureseg"),
+      MEASURES.map((m) => ({ key: m.key, label: m.label })),
+      () => measure, (k) => { measure = k; });
+    const tt = document.getElementById("tabletoggle");
+    tt.setAttribute("aria-pressed", String(showTable));
+    document.getElementById("tablecard").hidden = !showTable;
+    const plural = (n, word) => n + " " + word + (n === 1 ? "" : "s");
+    document.getElementById("prov").textContent = [
+      plural(DATA.rows.length, "run"), plural(VARIANTS.length, "agent"),
+      plural(PROBLEMS.length, "problem"), plural(JUDGES.length, "judge")
+    ].join(" · ");
+  }
+
+  function renderChips() {
+    const host = document.getElementById("chiprow");
+    host.replaceChildren();
+    VARIANTS.forEach((v, i) => {
+      const n = DATA.rows.filter((r) => r.v === i && inJudge(r)).length;
+      const covered = new Set(DATA.rows.filter((r) => r.v === i && inJudge(r)).map((r) => r.p)).size;
+      const c = el("button", "chip");
+      c.type = "button";
+      c.setAttribute("aria-pressed", String(active.has(i)));
+      c.appendChild(el("span", null, v.short));
+      c.appendChild(el("span", "n", String(n)));
+      // An agent that skipped part of the suite cannot be compared on means
+      // with one that attempted all of it, so the chip says so rather than
+      // leaving the reader to infer it from a gappy grid row.
+      if (covered < PROBLEMS.length) {
+        c.appendChild(el("span", "warn", "⚠ " + covered + "/" + PROBLEMS.length));
+      }
+      c.addEventListener("click", () => {
+        if (active.has(i)) { if (active.size > 1) active.delete(i); } else active.add(i);
+        renderAll();
+      });
+      host.appendChild(c);
+    });
+    const all = el("button", "chip");
+    all.type = "button";
+    all.setAttribute("aria-pressed", "true");
+    all.appendChild(el("span", null, "show all"));
+    all.addEventListener("click", () => { active = new Set(VARIANTS.map((_, i) => i)); renderAll(); });
+    host.appendChild(all);
+  }
+
+  /* ---- summary ----------------------------------------------------------- */
+  function renderSummary() {
+    const host = document.getElementById("summary");
+    host.replaceChildren();
+    const rows = slice();
+    const subs = submissions(rows);
+    const scored = rows.filter((r) => r.gt > 0 && r.gp === r.gt);
+    const ran = subs.filter((r) => r.ran).length;
+    // Name the judge rather than counting judges. "both judges" was a lie the
+    // moment a set arrived with only one.
+    const jname = judge === "all"
+      ? (JUDGES.length === 1 ? JUDGES[0].label : "all " + JUDGES.length + " judges")
+      : (JUDGES.find((j) => j.id === judge) || {}).label;
+    const tiles = [
+      { k: "Runs in view", v: String(rows.length),
+        f: shown().length + " agents · " + jname },
+      { k: "Submissions that ran", v: subs.length ? pct(ran / subs.length) : "—",
+        f: ran + " of " + subs.length },
+      { k: "Mean of scored runs", v: fx(mean(scored.map((r) => r.s)), 1),
+        f: "n = " + scored.length },
+      { k: "Reached GOLD", v: String(rows.filter((r) => r.t === "GOLD").length),
+        f: rows.length ? pct(rows.filter((r) => r.t === "GOLD").length / rows.length) + " of runs" : "—" }
+    ];
+    for (const t of tiles) {
+      const d = el("div", "sum");
+      d.appendChild(el("div", "k", t.k));
+      d.appendChild(el("div", "v", t.v));
+      d.appendChild(el("div", "f", t.f));
+      host.appendChild(d);
+    }
+  }
+
+  /* ---- scoreboard -------------------------------------------------------- */
+  function renderScoreboard() {
+    const t = document.getElementById("scoreboard");
+    t.replaceChildren();
+    const head = ["Agent", "Problems", "Submissions", "Compiled", "Ran", "Scored"]
+      .concat(JUDGES.map((j) => j.label));
+    const thead = el("thead"), hr = el("tr");
+    head.forEach((h, i) => {
+      const th = el("th", i === 6 ? "rule" : null, h);
+      if (i >= 6) th.appendChild(el("span", "thw", "mean"));
+      hr.appendChild(th);
+    });
+    thead.appendChild(hr);
+    t.appendChild(thead);
+
+    const tb = el("tbody");
+    const order = shown();
+    for (const vi of order) {
+      const rows = DATA.rows.filter((r) => r.v === vi && inJudge(r));
+      const subs = submissions(rows);
+      const covered = new Set(rows.map((r) => r.p)).size;
+      const scored = rows.filter((r) => r.gt > 0 && r.gp === r.gt).length;
+      const tr = el("tr");
+      const cells = [
+        { t: VARIANTS[vi].label },
+        { t: covered + " / " + PROBLEMS.length, dim: covered < PROBLEMS.length },
+        { t: String(subs.length) },
+        { t: subs.length ? pct(subs.filter((r) => r.comp).length / subs.length) : "—" },
+        { t: subs.length ? pct(subs.filter((r) => r.ran).length / subs.length) : "—" },
+        { t: String(scored) }
+      ];
+      JUDGES.forEach((j, i) => {
+        const m = mean(rows.filter((r) => JUDGES[r.j].id === j.id).map((r) => r.s));
+        cells.push({ t: fx(m, 1), cls: i === 0 ? "rule" : null });
+      });
+      for (const c of cells) {
+        const td = el("td", [c.cls, c.dim ? "dim" : null].filter(Boolean).join(" ") || null, c.t);
+        tr.appendChild(td);
+      }
+      tb.appendChild(tr);
+    }
+    t.appendChild(tb);
+    if (!order.length) t.appendChild(el("caption", "empty", "No agents selected."));
+  }
+
+  /* ---- grid -------------------------------------------------------------- */
+  // One number per agent per problem, in whatever the measure segment selects.
+  // Returns null when the slice holds nothing to average, which the cell draws
+  // as an em dash rather than as a zero.
+  function cellValue(vi, pi) {
+    const rows = cellRows(vi, pi).filter((r) => active.has(r.v));
+    if (!rows.length) return null;
+    if (measure === "ran") {
+      const subs = submissions(rows);
+      return subs.length ? subs.filter((r) => r.ran).length / subs.length : null;
+    }
+    if (measure === "score") return mean(rows.map((r) => r.s));
+    return mean(rows.filter((r) => typeof r.cat[measure] === "number").map((r) => r.cat[measure]));
+  }
+
+  function renderGrid() {
+    const host = document.getElementById("grid");
+    host.replaceChildren();
+    const vis = shown();
+    const m = MEASURES.find((x) => x.key === measure);
+    host.style.gridTemplateColumns =
+      "minmax(120px, 1.5fr) repeat(" + PROBLEMS.length + ", minmax(62px, 1fr))";
+
+    document.getElementById("gridnote").textContent = measure === "ran"
+      ? "Share of submissions that executed. Click any cell for every agent's runs on that problem, the clicked one first. The column header does the same with nobody first."
+      : (m.label + (m.cat ? " score, averaged over runs that reached a judge. " :
+                            ", averaged over every run including the zeros. ") +
+         "Click any cell for every agent's runs on that problem, the clicked one first. The column header does the same with nobody first.");
+
+    host.appendChild(el("div"));
+    // The header selects the whole column, which is the panel's scope anyway.
+    // Clicking a cell pins one agent to the top of it; clicking the header
+    // asks for the problem with nobody pinned.
+    PROBLEMS.forEach((p, pi) => {
+      const h = el("button", "g-h" + (selection && selection.p === pi ? " on" : ""), p);
+      h.type = "button";
+      h.setAttribute("aria-label", p + ", all agents");
+      h.addEventListener("click", () => {
+        selection = { v: null, p: pi };
+        renderGrid();
+        renderDetail();
+      });
+      host.appendChild(h);
+    });
+
+    for (const vi of vis) {
+      // The row label carries the selection too. The cell outline alone says
+      // which problem, never which agent, and the agent is the harder of the
+      // two to read off these names.
+      const name = el("div", "g-r" + (selection && selection.v === vi ? " on" : ""),
+                      VARIANTS[vi].short);
+      name.title = VARIANTS[vi].label;
+      host.appendChild(name);
+      for (let pi = 0; pi < PROBLEMS.length; pi++) {
+        const v = cellValue(vi, pi);
+        const n = cellRows(vi, pi).filter((r) => active.has(r.v)).length;
+        const b = el("button", "cell");
+        b.type = "button";
+        const on = selection && selection.v === vi && selection.p === pi;
+        b.setAttribute("aria-pressed", String(!!on));
+        if (v === null) {
+          b.style.background = css("--grid");
+          b.style.color = css("--ink-muted");
+          b.textContent = "—";
+        } else {
+          const t = measure === "ran" ? v : v / 100;
+          const st = seqStep(t);
+          b.style.background = css(st.varName);
+          b.style.color = st.ink;
+          b.textContent = measure === "ran" ? pct(v) : fx(v, 0);
+        }
+        b.setAttribute("aria-label", VARIANTS[vi].label + ", " + PROBLEMS[pi] + ", " +
+          m.label + " " + (v === null ? "no data" : (measure === "ran" ? pct(v) : fx(v, 1))) +
+          ", " + n + " runs");
+        b.addEventListener("click", () => {
+          // A repeat click holds the cell. It used to clear the selection,
+          // which sent the panel back to its default landing, and with three
+          // agent names differing in one character that reads as the page
+          // ignoring the click rather than as a reset.
+          selection = { v: vi, p: pi };
+          renderGrid();
+          renderDetail();
+        });
+        host.appendChild(b);
+      }
+    }
+    renderRamp();
+  }
+
+  function renderRamp() {
+    const host = document.getElementById("ramp");
+    host.replaceChildren();
+    host.appendChild(el("span", null, measure === "ran" ? "0%" : "0"));
+    for (const s of SEQ) {
+      const i = el("i");
+      i.style.background = css(s);
+      host.appendChild(i);
+    }
+    host.appendChild(el("span", null, measure === "ran" ? "100%" : "100"));
+    host.appendChild(el("span", null, "·  grey means no run"));
+  }
+
+  /* ---- detail ------------------------------------------------------------ */
+  function renderDetail() {
+    const host = document.getElementById("runlist");
+    const ctx = document.getElementById("detailctx");
+    host.replaceChildren();
+
+    // The panel is scoped to the problem, not to the one cell that was
+    // clicked. Comparing agents is the reason the page exists, and the runs
+    // are the only place the evidence lives, so showing one agent at a time
+    // made the reader hold the other two in their head. The clicked agent
+    // leads the list; the rest follow in the page's one ordering.
+    let target = selection;
+    if (!target) {
+      // Land on something rather than an empty panel. The first visible cell
+      // that has runs is arbitrary but predictable, which beats opening on a
+      // cell the reader has to go find.
+      outer:
+      for (const vi of shown()) {
+        for (let pi = 0; pi < PROBLEMS.length; pi++) {
+          if (cellRows(vi, pi).length) { target = { v: vi, p: pi }; break outer; }
+        }
+      }
+    }
+    ctx.replaceChildren();
+    if (!target) {
+      ctx.appendChild(el("span", null, "No runs in view."));
+      host.appendChild(el("p", "empty", "Nothing to show under the current filters."));
+      return;
+    }
+    const pinned = target.v !== null && active.has(target.v) ? target.v : null;
+    const order = shown().filter((vi) => vi !== pinned);
+    if (pinned !== null) order.unshift(pinned);
+
+    const groups = [];
+    for (const vi of order) {
+      const rows = cellRows(vi, target.p).sort((a, b) => a.r - b.r || a.j - b.j);
+      if (rows.length) groups.push({ vi: vi, rows: rows });
+    }
+    const total = groups.reduce((a, g) => a + g.rows.length, 0);
+
+    ctx.appendChild(el("span", "who", PROBLEMS[target.p]));
+    ctx.appendChild(el("span", null, "  ·  " + groups.length +
+      (groups.length === 1 ? " agent" : " agents") + "  ·  " + total +
+      (total === 1 ? " run" : " runs") +
+      (selection ? "" : "  ·  click any cell to change")));
+
+    for (const g of groups) {
+      const head = el("div", "ghead" + (g.vi === pinned ? " on" : ""));
+      head.appendChild(el("span", "gname", VARIANTS[g.vi].label));
+      const scored = g.rows.filter((r) => r.gt > 0 && r.gp === r.gt);
+      head.appendChild(el("span", "gmeta",
+        g.rows.length + (g.rows.length === 1 ? " run" : " runs") + "  ·  mean " +
+        fx(mean(g.rows.map((r) => r.s)), 1) +
+        (scored.length === g.rows.length ? "" : "  ·  " +
+          (g.rows.length - scored.length) + " scored zero")));
+      host.appendChild(head);
+      for (const r of g.rows) host.appendChild(runNode(r));
+    }
+    if (!groups.length) host.appendChild(el("p", "empty", "No runs for this problem."));
+  }
+
+  // How this run's composite was assembled. The contributions sum to the total
+  // it prints, so the row is a check the reader can run. The total sums the
+  // displayed figures rather than the unrounded products, because a row meant
+  // to be checked must add up on screen.
+  // Evaluator rows arranged the way the score was built, because a flat list
+  // invites reading an individual evaluator as the category above it. The
+  // category number is a confidence-weighted mean of the rows beneath it, so
+  // `petsc_best_practices 0.76` sitting under `PETSc usage 83.1` is arithmetic
+  // rather than a contradiction. Gates come last: they can zero the composite
+  // but are never averaged into a category.
+  function evaluatorGroups(r) {
+    const out = [], placed = new Set();
+    for (const c of CATS) {
+      const rows = r.ev.filter((e) => EVAL_CAT[e.n] === c);
+      if (!rows.length) continue;
+      rows.forEach((e) => placed.add(e));
+      const scored = rows.filter((e) => typeof e.s === "number");
+      const weighted = scored.some((e) => typeof e.c === "number" && e.c !== 1);
+      const note = scored.length === 1
+        ? "the category is this evaluator"
+        : (weighted ? "confidence-weighted mean of " : "mean of ") + scored.length + " evaluators";
+      out.push({ label: CAT_LABELS[c] || c, value: r.cat[c], note: note, rows: rows });
+    }
+    const rest = r.ev.filter((e) => !placed.has(e));
+    if (rest.length) {
+      out.push({
+        label: "Gates and unweighted checks", value: null,
+        note: "not averaged into any category", rows: rest,
+      });
+    }
+    return out;
+  }
+
+  function metricStrip(r) {
+    const cats = CATS.filter((c) => typeof r.cat[c] === "number");
+    if (!cats.length) return null;
+    const wrap = el("div", "metrics");
+    const hd = el("div", "mrow mhead");
+    ["Metric", "", "Score", "Weight", "Adds"].forEach((t) => hd.appendChild(el("span", null, t)));
+    wrap.appendChild(hd);
+    let total = 0;
+    for (const c of cats) {
+      const v = r.cat[c], w = DATA.weights[c];
+      const adds = Math.round(v * w * 10) / 10;
+      total += adds;
+      const row = el("div", "mrow");
+      row.appendChild(el("span", "mname", CAT_LABELS[c] || c));
+      const track = el("span", "mtrack");
+      const fill = el("span", "mfill");
+      fill.style.width = Math.max(0, Math.min(100, v)) + "%";
+      fill.style.background = css(seqStep(v / 100).varName);
+      track.appendChild(fill);
+      row.appendChild(track);
+      row.appendChild(el("span", "mval", fx(v, 0)));
+      row.appendChild(el("span", "mw", "× " + w.toFixed(2)));
+      row.appendChild(el("span", "mcon", fx(adds, 1)));
+      wrap.appendChild(row);
+    }
+    const tot = el("div", "mrow mtot");
+    tot.appendChild(el("span", "mname", "Composite"));
+    tot.appendChild(el("span"));
+    tot.appendChild(el("span"));
+    // A missing category, or a stored score this weighting does not reproduce,
+    // is flagged rather than hidden. That is how a rubric change goes unnoticed.
+    const flags = [];
+    if (cats.length < CATS.length) flags.push(cats.length + "/" + CATS.length);
+    if (Math.abs(total - r.s) > 0.1) flags.push("≠ " + fx(r.s, 1));
+    const fl = el("span", "mw", flags.join("  "));
+    if (flags.length) fl.style.color = css("--status-warning");
+    tot.appendChild(fl);
+    tot.appendChild(el("span", "mcon", fx(total, 1)));
+    wrap.appendChild(tot);
+    return wrap;
+  }
+
+  // Every declared test case, as the harness ran it. A problem declares its own
+  // cases and each runs with its own arguments and rank count, so one run of
+  // GradShafranov is six invocations of the binary. Any one of them failing
+  // fails the execution gate and zeroes the composite, which the reader can
+  // only follow if the failing case is named and its stderr is here.
+  function caseStrip(r) {
+    const cases = r.cases || [];
+    // Runs made before the harness ran every case carry one argument line and
+    // no cases. Showing that line unlabelled is honest; inventing a case 0
+    // around it would claim a record the run does not have.
+    if (!cases.length) return r.cli ? el("div", "cliline", r.cli) : null;
+
+    const failed = cases.filter((c) => !c.ok).length;
+    const wrap = el("div", "cases");
+    wrap.appendChild(el("div", "ccap", cases.length +
+      (cases.length === 1 ? " test case" : " test cases") +
+      (failed ? " · " + failed + " failed" : "")));
+
+    for (const c of cases) {
+      const row = el("div", "crow");
+      row.appendChild(el("span", "cidx", "#" + c.i));
+      row.appendChild(el("span", "cargs" + (c.a ? "" : " none"), c.a || "no arguments"));
+      row.appendChild(el("span", "cnum", "np " + c.n));
+      row.appendChild(el("span", "cnum", typeof c.t === "number" ? fx(c.t, 2) + "s" : "—"));
+      const pill = el("span", "cstat pill " + (c.ok ? "pass" : "fail"));
+      pill.appendChild(el("span", null, c.ok ? "✓" : "✕"));
+      pill.appendChild(el("span", null, c.ok ? "ran" : "failed"));
+      row.appendChild(pill);
+      wrap.appendChild(row);
+
+      if (c.ok || !c.e) continue;
+      wrap.appendChild(el("pre", "errbox caseerr", c.e));
+      if (c.elen > c.e.length) {
+        wrap.appendChild(el("p", "errnote", "Showing the first " + c.e.length.toLocaleString() +
+          " of " + c.elen.toLocaleString() + " characters. Full text in " + r.src + "."));
+      }
+    }
+    return wrap;
+  }
+
+  function runNode(r) {
+    const d = el("details", "run");
+    const s = el("summary");
+    s.appendChild(el("span", "chev", "›"));
+    s.appendChild(el("span", "rname", REPLICATES[r.r] || "run " + r.r));
+    s.appendChild(el("span", "rmeta", JUDGES[r.j].label + " judging · " + fx(r.wt, 1) + "s" +
+      (r.tok ? " · " + r.tok.toLocaleString() + " tok" : "")));
+    const tier = el("span", "pill " + (r.t === "FAIL" ? "fail" : "pass"));
+    tier.appendChild(el("span", null, r.t === "FAIL" ? "✕" : "✓"));
+    tier.appendChild(el("span", null, r.t));
+    s.appendChild(tier);
+    s.appendChild(el("span", "rscore", fx(r.s, 1)));
+    d.appendChild(s);
+
+    const body = el("div", "body");
+    if (r.err) {
+      const banner = el("p", "abortbanner");
+      const icon = el("span", null, "◆");
+      icon.style.color = css("--status-critical");
+      banner.appendChild(icon);
+      banner.appendChild(el("span", null, (r.fc || "Run aborted") +
+        ". The harness caught this before any evaluator ran, so the zero is the absence of a " +
+        "verdict rather than one."));
+      body.appendChild(banner);
+      body.appendChild(el("pre", "errbox", r.err));
+      if (r.errlen > r.err.length) {
+        body.appendChild(el("p", "errnote", "Showing the first " + r.err.length.toLocaleString() +
+          " of " + r.errlen.toLocaleString() + " characters. Full text in " + r.src + "."));
+      }
+    } else if (r.gf) {
+      // The other zero. A failing test case no longer throws out of the
+      // harness, so the run is evaluated, a gate fails, and the composite is
+      // zeroed by rule with no stack dump to show. Saying so is the difference
+      // between a verdict the reader can check and an unexplained zero.
+      const banner = el("p", "abortbanner");
+      const icon = el("span", null, "◆");
+      icon.style.color = css("--status-warning");
+      banner.appendChild(icon);
+      banner.appendChild(el("span", null, r.gp + " of " + r.gt + " gates passed. A failed gate " +
+        "zeroes the composite by rule and the categories are never scored, so this zero is a " +
+        "verdict rather than a missing one. The cases and gate rows below say what failed."));
+      body.appendChild(banner);
+    }
+    const ms = metricStrip(r);
+    if (ms) body.appendChild(ms);
+    const cs = caseStrip(r);
+    if (cs) body.appendChild(cs);
+    for (const f of r.code) body.appendChild(sourceNode(f));
+    for (const g of evaluatorGroups(r)) {
+      const grp = el("div", "evgroup");
+      const gh = el("div", "evghead");
+      gh.appendChild(el("span", "evgname", g.label));
+      if (typeof g.value === "number") gh.appendChild(el("span", "evgval", fx(g.value, 1)));
+      gh.appendChild(el("span", "evgnote", g.note));
+      grp.appendChild(gh);
+      for (const e of g.rows) {
+        const row = el("div", "evrow");
+        const head = el("div", "evhead");
+        head.appendChild(el("span", "evname", e.n));
+        head.appendChild(el("span", "pill", e.t));
+        if (e.p !== null && e.p !== undefined) {
+          const p = el("span", "pill " + (e.p ? "pass" : "fail"));
+          p.appendChild(el("span", null, e.p ? "✓" : "✕"));
+          p.appendChild(el("span", null, e.p ? "pass" : "fail"));
+          head.appendChild(p);
+        }
+        const bits = [];
+        if (typeof e.s === "number") bits.push("score " + e.s.toFixed(2));
+        if (typeof e.c === "number") bits.push("conf " + e.c.toFixed(2));
+        if (e.m && e.m !== "deterministic") bits.push(e.m);
+        if (bits.length) head.appendChild(el("span", "evscore", bits.join("  ·  ")));
+        row.appendChild(head);
+        if (e.f) row.appendChild(el("p", "evfb", e.f));
+        grp.appendChild(row);
+      }
+      body.appendChild(grp);
+    }
+    if (!r.ev.length && !r.err) body.appendChild(el("p", "evfb", "No evaluator detail recorded."));
+    d.appendChild(body);
+    return d;
+  }
+
+  // The source the agent submitted, line-numbered and plain. No highlighting
+  // library: the page stays self-contained and offline. Lines are built on
+  // first open so a detail panel of twenty runs does not lay out twenty
+  // thousand rows up front.
+  function sourceNode(f) {
+    const det = el("details", "src");
+    const sum = el("summary");
+    sum.appendChild(el("span", "chev", "›"));
+    sum.appendChild(el("span", "sname", f.f));
+    const lines = f.t.split("\n");
+    sum.appendChild(el("span", "smeta", lines.length + " lines · sha " + f.h));
+    const copy = el("button", "copy", "copy");
+    copy.type = "button";
+    sum.appendChild(copy);
+    det.appendChild(sum);
+    const code = el("div", "code");
+    det.appendChild(code);
+
+    let filled = false;
+    function fill() {
+      if (filled) return;
+      filled = true;
+      const frag = document.createDocumentFragment();
+      lines.forEach((text, i) => {
+        const row = el("div", "cline");
+        row.appendChild(el("span", "ln", String(i + 1)));
+        row.appendChild(el("span", "lt", text));
+        frag.appendChild(row);
+      });
+      code.appendChild(frag);
+    }
+    copy.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const done = (msg) => {
+        copy.textContent = msg;
+        setTimeout(() => { copy.textContent = "copy"; }, 1600);
+      };
+      const fallback = () => { det.open = true; fill(); selectNode(code); done("select, then copy"); };
+      try {
+        navigator.clipboard.writeText(f.t).then(() => done("copied"), fallback);
+      } catch (err) { fallback(); }
+    });
+    det.addEventListener("toggle", () => { if (det.open) fill(); });
+    return det;
+  }
+
+  function selectNode(node) {
+    try {
+      const range = document.createRange();
+      range.selectNodeContents(node);
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+    } catch (err) { /* selection is a convenience, never a requirement */ }
+  }
+
+  /* ---- all-runs table ---------------------------------------------------- */
+  function renderTable() {
+    const t = document.getElementById("datatable");
+    t.replaceChildren();
+    const head = [{ t: "Problem" }, { t: "Agent" }, { t: "Judge" }, { t: "Run" }, { t: "Score" }]
+      .concat(CATS.map((c, i) => ({ t: CAT_LABELS[c] || c, w: DATA.weights[c],
+                                    cls: i === 0 ? "rule" : null })),
+              [{ t: "Tier", cls: "rule" }, { t: "Compiled" }, { t: "Ran" },
+               { t: "Outcome" }, { t: "Wall s" }, { t: "Tokens" }]);
+    const thead = el("thead"), hr = el("tr");
+    for (const c of head) {
+      const th = el("th", c.cls || null, c.t);
+      if (c.w !== undefined) th.appendChild(el("span", "thw", "w " + c.w));
+      hr.appendChild(th);
+    }
+    thead.appendChild(hr);
+    t.appendChild(thead);
+
+    const tb = el("tbody");
+    const rows = slice().slice().sort((a, b) => a.p - b.p || a.v - b.v || a.r - b.r || a.j - b.j);
+    for (const r of rows) {
+      const tr = el("tr");
+      const cells = [{ t: PROBLEMS[r.p] }, { t: VARIANTS[r.v].short }, { t: JUDGES[r.j].label },
+                     { t: REPLICATES[r.r] || String(r.r) }, { t: fx(r.s, 1) }]
+        .concat(CATS.map((c, i) => ({ t: fx(r.cat[c], 0), cls: i === 0 ? "rule" : null })),
+                [{ t: r.t, cls: "rule" }, { t: r.comp ? "yes" : "no" }, { t: r.ran ? "yes" : "no" },
+                 { t: r.fc || "scored " + r.gp + "/" + r.gt + " gates" },
+                 { t: fx(r.wt, 1) }, { t: r.tok ? r.tok.toLocaleString() : "—" }]);
+      for (const c of cells) tr.appendChild(el("td", c.cls || null, c.t));
+      tb.appendChild(tr);
+    }
+    t.appendChild(tb);
+  }
+
+  /* ---- footer ------------------------------------------------------------ */
+  function renderFoot() {
+    const host = document.getElementById("foot");
+    host.replaceChildren();
+    host.appendChild(el("div", null, "Built " + DATA.generated +
+      " from " + DATA.rows.length + " records."));
+    if (DATA.harnessRevs && DATA.harnessRevs.length) {
+      host.appendChild(el("div", null, "Harness " + DATA.harnessRevs.join(", ") +
+        (DATA.petscRevs && DATA.petscRevs.length ? " · PETSc " + DATA.petscRevs.join(", ") : "")));
+    }
+  }
+
+  /* ---- orchestration ----------------------------------------------------- */
+  function renderAll() {
+    renderChrome();
+    renderChips();
+    renderSummary();
+    renderScoreboard();
+    renderGrid();
+    renderDetail();
+    renderFoot();
+    if (showTable) renderTable();
+  }
+
+  document.getElementById("tabletoggle").addEventListener("click", () => {
+    showTable = !showTable;
+    renderAll();
+  });
+
+  renderAll();
+})();
+</script>
