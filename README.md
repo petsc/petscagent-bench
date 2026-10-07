@@ -441,6 +441,13 @@ replayed submissions differ only by the judge. `run_judge_swap.py` uses it that
 way, generating once with the baseline judge and replaying that output file for
 every other judge, then asserting the gates came out identical.
 
+A rescore writes beside the file it replays rather than on top of it, so both
+passes survive. It always sweeps the whole recorded run, so `--problems` is
+refused alongside `--replay`, and a replay file disagreeing with `data/` in
+either direction aborts before scoring. Writing back fewer problems than were
+read would leave the ones left out with no copy of their code anywhere, since
+replay reads submissions from the file rather than from the tree.
+
 Replayed problems are marked `purple_response_replayed` in the results, and
 they are excluded from efficiency aggregates and from the self-reported model
 detection, because their telemetry describes the earlier run.

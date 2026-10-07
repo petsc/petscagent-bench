@@ -87,6 +87,10 @@ def launch(
     """
     # Resolved here so a mistyped term fails now rather than as a failed task
     # after the three servers have come up.
+    if replay and problems:
+        typer.echo("--problems cannot be combined with --replay: a rescore "
+                   "always sweeps the whole recorded run.", err=True)
+        raise typer.Exit(code=1)
     if problems:
         try:
             select_problems(read_from_json(Path("./data")), problems)

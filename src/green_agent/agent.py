@@ -431,6 +431,18 @@ class Agent:
         self.max_num_prob = max_num_prob
         # Comma-separated terms narrowing the problem set, None for all of it.
         self.problems = problems
+        if replay_path and problems:
+            # A rescore must cover the whole recorded set. Scoring a subset
+            # would write a file holding only those problems, and replay
+            # reads submissions from the file rather than the tree, so the
+            # ones left out could never be rescored again.
+            raise ValueError(
+                "--problems cannot be combined with --replay: a rescore "
+                "always sweeps the whole recorded run"
+            )
+        # A rescore writes beside the run it replays rather than on top of it,
+        # so both passes survive.
+        self.output_dir = Path(replay_path).parent if replay_path else Path("output")
         self.metrics = {}
         self.green_id = green_id
         self.purple_id = purple_id
@@ -471,7 +483,13 @@ class Agent:
         nsize = record.get("requested_nsize")
         cli_args = record.get("cli_args")
         if not sources:
-            raise ValueError(f"Replay record for {problem_name} has no sources")
+            # The purple produced nothing and a rescore cannot discover
+            # otherwise, so re-raise the record's own diagnosis rather than
+            # one about the replay machinery.
+            raise ValueError(
+                (record.get("evaluation_summary") or {}).get("error")
+                or f"Replay record for {problem_name} has no sources"
+            )
         # An empty cli_args is a valid submission, so only an absent one is an
         # error. Every test case supplies its own args, which means the value
         # replayed here is a fallback that has to parse rather than a value the
@@ -696,7 +714,8 @@ class Agent:
 
         # input_text = get_message_text(message)
         data_file_path = Path("./data")
-        test_data = select_problems(read_from_json(data_file_path), self.problems)
+        all_data = read_from_json(data_file_path)
+        test_data = select_problems(all_data, self.problems)
         limit = self.max_num_prob or len(test_data)
         selected = test_data[:limit]
         if self.problems:
@@ -704,6 +723,22 @@ class Agent:
                 f"@@@ Green agent: Running {len(selected)} problem(s) matching "
                 f"'{self.problems}': {', '.join(d['problem_name'] for d in selected)}"
             )
+        if self.replay_index is not None:
+            recorded = set(self.replay_index)
+            present = {d["problem_name"] for d in selected}
+            if recorded != present:
+                # Neither direction can be scored honestly. A recorded problem
+                # missing from data/ has no specification to grade against, and
+                # a problem only in data/ has no submission to replay and would
+                # otherwise be recorded as a FAIL at zero.
+                raise ValueError(
+                    "replay file and data/ disagree, refusing to rescore a "
+                    "partial set. Only in the replay file: "
+                    f"{', '.join(sorted(recorded - present)) or 'none'}. "
+                    "Only in data/: "
+                    f"{', '.join(sorted(present - recorded)) or 'none'}"
+                )
+
         mcp_initialized = False
         # Taken once, before the loop, so the whole pass shares one value
         # rather than each record holding the moment it happened to finish.
@@ -736,6 +771,10 @@ class Agent:
                 # Replay a recorded submission when one was supplied
                 purple_agent_response = None
                 if self.replay_index is not None:
+                    # Flagged before the replay, so a record with nothing to
+                    # replay still counts as replayed and stays out of this
+                    # pass's aggregates over live purple calls.
+                    br.purple_response_replayed = True
                     purple_agent_response = self._replay_response(pname)
                 # Otherwise ask the purple agent to generate one
                 if purple_agent_response is None:
@@ -759,7 +798,6 @@ class Agent:
                         on_metrics=record_boundary_metrics,
                     )
                 else:
-                    br.purple_response_replayed = True
                     print(f"@@@ Green agent: Using replayed response for {pname}")
 
                 if not isinstance(purple_agent_response, StreamResponse):
@@ -897,8 +935,8 @@ class Agent:
         # "pdesim-<model>-c<N>"), falling back to the purple_model task tag.
         reported_model = _reported_model(results)
         effective_model = reported_model or self.purple_model
-        output_dir = Path("output")
-        output_dir.mkdir(exist_ok=True)
+        output_dir = self.output_dir
+        output_dir.mkdir(parents=True, exist_ok=True)
 
         # _name_slug keeps hyphens so a composite label stays readable.
         model_slug = _name_slug(effective_model)
@@ -981,8 +1019,8 @@ class Agent:
             "reported_model": reported_model,
             "judge_model": self.model,
             "run_index": run_index,
-            # Null for a full run, so a short run is not mistaken for one
-            # that lost problems.
+            # Null for a full run. Never set on a rescore, which always
+            # sweeps the whole recorded set.
             "problem_filter": self.problems,
             "scored_at": pass_stamp,
             "summary": summary,

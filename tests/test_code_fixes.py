@@ -478,6 +478,32 @@ class CodeFixTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 agent._replay_response(name)
 
+    def test_a_rescore_writes_beside_the_run_it_replays(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        from src.green_agent.agent import Agent
+
+        cfg = {"evaluation": {"llm": {"model": "none/none"}}}
+
+        def build(**kw):
+            return Agent(config=cfg, purple_agent_url="http://purple",
+                         mcp_server_url="http://mcp", **kw)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            recorded = Path(tmp) / "recorded" / "anything.json"
+            recorded.parent.mkdir()
+            recorded.write_text(json.dumps({"results": []}))
+
+            # A plain run still writes to the live output tree.
+            self.assertEqual(build().output_dir, Path("output"))
+
+            # A rescore lands in the directory it replays rather than beside
+            # unrelated runs in output/, so its scores sit with the set they
+            # grade and the older pass survives next to them.
+            self.assertEqual(
+                build(replay_path=str(recorded)).output_dir, recorded.parent)
+
     def test_select_problems_matches_by_substring_and_glob(self):
         from src.green_agent.agent import select_problems
 
@@ -580,6 +606,56 @@ class FakeUpdater:
 
     async def update_status(self, state=None, message=None):
         self.statuses.append((state, message))
+
+
+class ARescoreScoresTheWholeRecordedRunTest(unittest.TestCase):
+    """A rescore has to cover exactly the set the replayed file holds.
+
+    Replay reads submissions from the aggregate rather than from the tree, so
+    a pass that wrote back fewer problems than it read would leave the ones it
+    left out with no copy of their code anywhere, and they could never be
+    rescored again.
+    """
+
+    def test_narrowing_a_rescore_is_refused_up_front(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        from src.green_agent.agent import Agent
+
+        with tempfile.TemporaryDirectory() as tmp:
+            recorded = Path(tmp) / "recorded.json"
+            recorded.write_text(json.dumps({"results": []}))
+            with self.assertRaises(ValueError) as caught:
+                Agent(config={"evaluation": {"llm": {"model": "none/none"}}},
+                      purple_agent_url="http://purple",
+                      mcp_server_url="http://mcp",
+                      replay_path=str(recorded), problems="alpha")
+        self.assertIn("--problems", str(caught.exception))
+
+    def run_against(self, recorded_names, dataset_names):
+        import asyncio
+        from unittest import mock
+        from src.green_agent.agent import Agent
+
+        agent = Agent.__new__(Agent)
+        agent.replay_index = {n: {} for n in recorded_names}
+        agent.problems = None
+        agent.max_num_prob = None
+        dataset = [{"problem_name": n, "problem_id": n} for n in dataset_names]
+        with mock.patch("src.green_agent.agent.read_from_json",
+                        return_value=dataset):
+            with self.assertRaises(ValueError) as caught:
+                asyncio.run(agent.run(None, None))
+        return str(caught.exception)
+
+    def test_a_disagreement_in_either_direction_aborts_before_scoring(self):
+        # A recorded problem gone from data/ has no specification left to
+        # grade against. A problem only in data/ has no submission to replay
+        # and would otherwise be written down as a FAIL at zero.
+        message = self.run_against(["alpha", "beta"], ["beta", "gamma"])
+        self.assertIn("Only in the replay file: alpha", message)
+        self.assertIn("Only in data/: gamma", message)
 
 
 class DerivedSummaryTest(unittest.TestCase):
