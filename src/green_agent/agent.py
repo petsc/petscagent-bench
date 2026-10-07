@@ -1027,13 +1027,20 @@ class Agent:
             "results": records,
         }
         local_path.write_text(json.dumps(json_data, indent=2))
+        self._write_submissions(results, run_dir)
+        self._write_scores(results, records, run_dir)
+        return local_path, json_data
+
+    def _write_submissions(self, results, run_dir):
+        """Write the code the purple agent produced, and a manifest of it.
+
+        The manifest names each file relative to the tree root, so it stays
+        valid wherever the tree is read from.
+        """
         source_manifest = []
-        for result, record in zip(results, records):
+        for result in results:
             problem_dir = run_dir / _slug(result.problem_name)
             problem_dir.mkdir(exist_ok=True)
-            (problem_dir / "result.json").write_text(
-                json.dumps(record, indent=2), encoding="utf-8"
-            )
             for source_record in result.generated_sources or []:
                 source_path = problem_dir / source_record["server_name"]
                 source_path.write_text(source_record["source"], encoding="utf-8")
@@ -1045,7 +1052,15 @@ class Agent:
         (run_dir / "manifest.json").write_text(
             json.dumps(source_manifest, indent=2), encoding="utf-8"
         )
-        return local_path, json_data
+
+    def _write_scores(self, results, records, run_dir):
+        """Write each problem's record beside the code it grades."""
+        for result, record in zip(results, records):
+            problem_dir = run_dir / _slug(result.problem_name)
+            problem_dir.mkdir(exist_ok=True)
+            (problem_dir / "result.json").write_text(
+                json.dumps(record, indent=2), encoding="utf-8"
+            )
 
     async def _evaluate_code(
         self,
