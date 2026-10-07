@@ -41,6 +41,7 @@ from src.util.telemetry import (
 from pathlib import Path
 
 from dataclasses import dataclass, asdict, field
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 import dotenv
 
@@ -395,6 +396,8 @@ class BenchmarkResult:
     category_scores: Optional[Dict[str, float]] = None
     evaluation_summary: Optional[Dict[str, Any]] = None
     evaluation_details: Optional[List[Dict[str, Any]]] = None
+    scored_at: Optional[str] = None     # UTC ISO 8601, one value per pass
+    scored_by: Optional[str] = None     # the judge model that scored it
 
 
 def _derive_summary(results: List["BenchmarkResult"]) -> Dict[str, Any]:
@@ -702,6 +705,9 @@ class Agent:
                 f"'{self.problems}': {', '.join(d['problem_name'] for d in selected)}"
             )
         mcp_initialized = False
+        # Taken once, before the loop, so the whole pass shares one value
+        # rather than each record holding the moment it happened to finish.
+        pass_stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
 
         for idx, data in enumerate(selected, start=1):
             pname = data["problem_name"]
@@ -718,6 +724,11 @@ class Agent:
                 problem_id=pid,
                 runs=False,
                 compiles=False,
+                # Stamped here rather than after a successful evaluation, so a
+                # problem that fails below is still attributed to this pass
+                # instead of leaving the field null.
+                scored_at=pass_stamp,
+                scored_by=self.model,
             )
             generated_sources = []
 
@@ -921,7 +932,7 @@ class Agent:
                 continue
 
         local_path, json_data = self._write_aggregate(
-            results, summary,
+            results, summary, pass_stamp,
             output_dir, run_dir, prefix, run_index, reported_model,
         )
         print(f"@@@ Green agent: Saved results to {local_path}")
@@ -944,7 +955,7 @@ class Agent:
         )
 
     def _write_aggregate(
-        self, results, summary,
+        self, results, summary, pass_stamp,
         output_dir, run_dir, prefix, run_index, reported_model,
     ):
         """Write the run's aggregate JSON and its run tree.
@@ -973,6 +984,7 @@ class Agent:
             # Null for a full run, so a short run is not mistaken for one
             # that lost problems.
             "problem_filter": self.problems,
+            "scored_at": pass_stamp,
             "summary": summary,
             "results": records,
         }
