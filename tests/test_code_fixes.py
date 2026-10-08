@@ -449,9 +449,9 @@ class CodeFixTests(unittest.TestCase):
             "problem": {
                 "problem_name": "problem",
                 "requested_nsize": 2,
-                # An empty cli_args is a valid submission, so replay must
+                # An empty request is a valid submission, so replay must
                 # accept it rather than treat it as a missing field.
-                "cli_args": "",
+                "requested_cli_args": "",
                 "generated_sources": [
                     {"original_name": "main.c", "source": "int main(void){return 0;}"}
                 ],
@@ -467,9 +467,13 @@ class CodeFixTests(unittest.TestCase):
 
         agent = Agent.__new__(Agent)
         agent.replay_index = {
-            "no_sources": {"requested_nsize": 1, "cli_args": "", "generated_sources": []},
+            "no_sources": {
+                "requested_nsize": 1,
+                "requested_cli_args": "",
+                "generated_sources": [],
+            },
             "no_nsize": {
-                "cli_args": "",
+                "requested_cli_args": "",
                 "generated_sources": [{"original_name": "a.c", "source": "x"}],
             },
         }

@@ -34,14 +34,23 @@ class HarnessPlumbingTest(unittest.TestCase):
         br = BenchmarkResult(
             problem_name="g", problem_id="1", runs=False, compiles=True
         )
-        asyncio.run(agent._run_test_cases(br, "g", problem, 1, "-ignored"))
+        asyncio.run(agent._run_test_cases(br, "g", problem, 1, "-ts_type euler"))
 
         self.assertEqual(len(br.cases), len(problem["test_cases"]))
         self.assertEqual(len(calls), len(problem["test_cases"]))
-        # Each case runs with the arguments it declares, not the agent's.
-        self.assertEqual(calls[1][1], problem["test_cases"][1]["args"])
+        # The agent's request runs, with each case's own arguments appended
+        # last so that PETSc's last-wins resolves any key the case names.
+        self.assertEqual(
+            calls[1][1], "-ts_type euler " + problem["test_cases"][1]["args"]
+        )
         self.assertEqual(calls[2][0], 4)  # case 2 declares nsize 4
-        self.assertEqual(br.cli_args, problem["test_cases"][0]["args"])
+        self.assertEqual(
+            br.cases[0].executed_args,
+            "-ts_type euler " + problem["test_cases"][0]["args"],
+        )
+        self.assertEqual(
+            br.cases[0].declared_args, problem["test_cases"][0]["args"]
+        )
         self.assertEqual(br.stdout, br.cases[0].stdout)
         self.assertTrue(br.runs)
         json.dumps(asdict(br))  # must still serialise into the output file
@@ -66,12 +75,13 @@ class HarnessPlumbingTest(unittest.TestCase):
         asyncio.run(
             agent._run_test_cases(br, "r", load("vecmpi.json"), 2, "-agent_choice")
         )
-        self.assertEqual(calls, [(3, "-N 10")])
-        self.assertEqual(br.cli_args, "-N 10")
+        self.assertEqual(calls, [(3, "-agent_choice -N 10")])
+        self.assertEqual(br.cases[0].executed_args, "-agent_choice -N 10")
+        self.assertEqual(br.cases[0].declared_args, "-N 10")
         self.assertEqual(br.actual_nsize, 3)
         self.assertEqual(len(br.cases), 1)
 
-    def test_missing_case_args_fall_back_to_agent_arguments(self):
+    def test_a_case_declaring_no_args_runs_the_agent_request_alone(self):
         from src.green_agent.agent import Agent, BenchmarkResult
 
         calls = []

@@ -317,10 +317,16 @@ def select_problems(test_data, spec):
 
 @dataclass
 class TestCaseResult:
-    """Record of one executable invocation."""
+    """Record of one executable invocation.
+
+    Three argument fields, because a case runs on the agent's request with the
+    data file's own arguments appended: `declared_args` is what the data file
+    contributed, and `executed_args` is the whole string that ran.
+    """
 
     index: int
-    args: str
+    declared_args: str
+    executed_args: str
     nsize: int
     runs: bool
     stdout: str = ""
@@ -344,7 +350,9 @@ class BenchmarkResult:
         purple_wall_time_sec: Wall-clock time spent waiting for the Purple Agent
         stdout: Program standard output
         stderr: Program standard error
-        cli_args: Command-line arguments used for execution
+        requested_cli_args: Arguments the Purple Agent asked for, before the
+            data file's per-case args were appended. `cases[i].executed_args`
+            holds what actually ran.
         cases: Canonical result records for every executable invocation. The
             scalar execution fields are retained as a compatibility view.
 
@@ -361,8 +369,8 @@ class BenchmarkResult:
     compiles: bool
     stdout: Optional[str] = None
     stderr: Optional[str] = None
-    cli_args: Optional[str] = None
     cases: List[TestCaseResult] = field(default_factory=list)
+    requested_cli_args: Optional[str] = None
     requested_nsize: Optional[int] = None
     actual_nsize: Optional[int] = None
     execution_time_sec: Optional[float] = None  # Code execution time only
@@ -547,7 +555,7 @@ class Agent:
             raise ValueError(f"Replay file has no record for {problem_name}")
         sources = record.get("generated_sources")
         nsize = record.get("requested_nsize")
-        cli_args = record.get("cli_args")
+        cli_args = record.get("requested_cli_args")
         if not sources:
             # The purple produced nothing and a rescore cannot discover
             # otherwise, so re-raise the record's own diagnosis rather than
@@ -556,13 +564,13 @@ class Agent:
                 (record.get("evaluation_summary") or {}).get("error")
                 or f"Replay record for {problem_name} has no sources"
             )
-        # An empty cli_args is a valid submission, so only an absent one is an
-        # error. Every test case supplies its own args, which means the value
-        # replayed here is a fallback that has to parse rather than a value the
-        # executions depend on.
+        # An empty request is a valid submission, so only an absent one is an
+        # error. The request is part of what runs, so replaying without it
+        # would rescore a different configuration than the original.
         if nsize is None or cli_args is None:
             raise ValueError(
-                f"Replay record for {problem_name} has no nsize or cli_args"
+                f"Replay record for {problem_name} has no nsize or "
+                f"requested_cli_args"
             )
         parts = [
             new_text_part(
@@ -716,9 +724,15 @@ class Agent:
         test_cases = problem.get("test_cases") or [{}]
         results: List[TestCaseResult] = []
         for idx, test_case in enumerate(test_cases):
-            case_args = test_case.get("args", cli_args)
+            declared_args = " ".join((test_case.get("args") or "").split())
+            # The case goes last: PETSc takes the last value of a repeated key,
+            # so the data file overrides the agent only on the keys it names.
+            # Split and rejoined because the server splits on single spaces.
+            executed_args = " ".join(
+                f"{cli_args or ''} {declared_args}".split()
+            )
             case_nsize = int(test_case.get("nsize", nsize))
-            print(f"@@@ Green agent: test case {idx} (nsize {case_nsize}) {case_args}")
+            print(f"@@@ Green agent: test case {idx} (nsize {case_nsize}) {executed_args}")
             case_br = BenchmarkResult(
                 problem_name=br.problem_name,
                 problem_id=br.problem_id,
@@ -727,7 +741,7 @@ class Agent:
             )
             try:
                 await self._run_executable(
-                    case_br, pname, case_nsize, case_args, valgrind=True
+                    case_br, pname, case_nsize, executed_args, valgrind=True
                 )
             except petscmcp.MCPDynamicClientReturnCode:
                 # A failed case is still a result. Continue so the execution
@@ -735,7 +749,8 @@ class Agent:
                 pass
             results.append(TestCaseResult(
                 index=idx,
-                args=case_args,
+                declared_args=declared_args,
+                executed_args=executed_args,
                 nsize=case_nsize,
                 runs=case_br.runs,
                 stdout=case_br.stdout or "",
@@ -748,7 +763,6 @@ class Agent:
         first = results[0]
         br.stdout = first.stdout
         br.stderr = first.stderr
-        br.cli_args = first.args
         br.actual_nsize = first.nsize
         br.runs = all(case.runs for case in results)
         # The scalar field keeps its old meaning, the runtime of the first
@@ -898,8 +912,8 @@ class Agent:
                 max_nsize = int(self.config.get("execution", {}).get("max_nsize", 64))
                 if not 1 <= nsize <= max_nsize:
                     raise ValueError(f"Purple agent nsize must be between 1 and {max_nsize}")
-                cli_args = m.group("cli_args")
-                br.cli_args = cli_args
+                cli_args = m.group("cli_args").strip()
+                br.requested_cli_args = cli_args
                 br.requested_nsize = nsize
                 # Token usage is optional, so that agents which do not report
                 # it still parse correctly.
