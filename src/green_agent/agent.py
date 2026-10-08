@@ -234,21 +234,25 @@ def _name_slug(name):
 
 
 def read_from_json(path):
-    """Read all test problems from JSONL files in a directory.
+    """Read all test problems from the JSON files in a directory.
 
-    Each file should contain one JSON object per line, with fields:
+    Each file holds one JSON object, with fields:
     - problem_name: Unique identifier for the problem
     - problem_id: Numeric or string ID
     - problem_description: Natural language problem specification
 
+    Anything not named ``*.json``, and anything hidden, is ignored, so an
+    editor backup or lock file cannot stop a run.
+
     Args:
-        path: Path to directory containing JSONL files
+        path: Path to directory containing the problem files
 
     Returns:
         List of problem dictionaries
 
     Raises:
-        RuntimeError: If directory does not exist
+        RuntimeError: If directory does not exist, or a .json file in it is
+            not a problem.
     """
     if not os.path.isdir(path):
         raise RuntimeError(f"Directory {path} does not exist")
@@ -256,13 +260,20 @@ def read_from_json(path):
     # Sorted because iterdir() returns filesystem order, which made the
     # problem order, and so any count-based limit, differ between machines.
     data = []
-    for file in sorted(Path(path).iterdir()):
+    for file in sorted(p for p in Path(path).iterdir()
+                       if p.suffix.lower() == ".json" and not p.name.startswith(".")):
         if not os.path.isfile(file):
             continue
-        with open(file, "r", encoding="utf-8") as fd:
-            problem = json.loads(fd.read().strip())
-            problem["source_file"] = file.name  # for the problems listing
-            data.append(problem)
+        try:
+            problem = json.loads(file.read_text(encoding="utf-8").strip())
+        except (OSError, ValueError) as e:
+            raise RuntimeError(f"{file} cannot be read: {e}") from e
+        # Valid JSON is not yet a problem, and without this the mistake
+        # surfaces much later as a KeyError naming no file.
+        if not isinstance(problem, dict) or not problem.get("problem_name"):
+            raise RuntimeError(f"{file} has no problem_name")
+        problem["source_file"] = file.name  # for the problems listing
+        data.append(problem)
     return data
 
 

@@ -172,10 +172,10 @@ def problems(
         main.py problems           every problem
         main.py problems darcy     what --problems darcy selects
     """
-    all_problems = read_from_json(Path("./data"))
     try:
+        all_problems = read_from_json(Path("./data"))
         selected = select_problems(all_problems, match)
-    except ValueError as e:
+    except (ValueError, RuntimeError) as e:
         typer.echo(str(e), err=True)
         raise typer.Exit(code=1)
 
