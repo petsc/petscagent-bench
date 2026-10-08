@@ -210,18 +210,42 @@ class BenchmarkResult:
     problem_name: str
     problem_id: str
     runs: bool
-    time_used_sec: float
     compiles: bool
     stdout: Optional[str] = None
     stderr: Optional[str] = None
-    cli_args: Optional[str] = None
-    
-    # Evaluation fields (NEW)
+    # One record per invocation. The scalar execution fields above and below
+    # are a compatibility view of cases[0].
+    cases: List[TestCaseResult] = field(default_factory=list)
+    requested_cli_args: Optional[str] = None   # what the Purple Agent asked for
+    requested_nsize: Optional[int] = None
+    actual_nsize: Optional[int] = None
+    execution_time_sec: Optional[float] = None
+    total_execution_time_sec: Optional[float] = None
+    valgrind_output: Optional[str] = None
+    generated_sources: Optional[List[Dict[str, str]]] = None
+    compile_stdout: Optional[str] = None
+    compile_stderr: Optional[str] = None
+    ...                 # token cost and Purple Agent efficiency telemetry
+
+    # Evaluation fields
     composite_score: Optional[float] = None  # 0-100
     tier: Optional[str] = None  # GOLD/SILVER/BRONZE/FAIL
     category_scores: Optional[Dict[str, float]] = None
     evaluation_summary: Optional[Dict[str, Any]] = None
     evaluation_details: Optional[List[Dict[str, Any]]] = None
+    scored_at: Optional[str] = None
+    scored_by: Optional[str] = None
+    pass_index: Optional[int] = None
+
+
+@dataclass
+class TestCaseResult:
+    index: int
+    declared_args: str   # what the data file's case contributed
+    executed_args: str   # requested_cli_args + declared_args, what ran
+    nsize: int
+    runs: bool
+    ...
 ```
 
 ### Agent initialization (Green Agent)
@@ -259,10 +283,8 @@ The evaluation method in `src/green_agent/agent.py` builds an `execution_result`
 ```python
 execution_result = {
     'compiles': benchmark_result.compiles,
-    'runs': benchmark_result.runs,
     'stdout': benchmark_result.stdout or '',
-    'stderr': benchmark_result.stderr or '',
-    'execution_time_sec': benchmark_result.time_used_sec,
+    'cases': [asdict(case) for case in benchmark_result.cases],
     'memory_mb': None,  # TODO: Add memory tracking if available
 }
 
@@ -270,7 +292,7 @@ execution_result = {
 
 
 eval_results = await self.evaluation_pipeline.evaluate(
-    code=generated_codes[0],
+    code=code,
     problem=problem_data,
     execution_result=execution_result,
 )

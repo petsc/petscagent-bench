@@ -126,7 +126,9 @@ inside the tolerance scores 1.0 and one outside decays exponentially.
 Convergence studies use ordinary `match` cases at coarse and fine resolutions.
 Their reference errors encode the expected order, so standard per-case scoring
 handles them without a separate convergence path. Problems with several test
-cases are run once per case, each with the arguments that case declares.
+cases are run once per case, on the agent's requested `cli_args` with the
+arguments that case declares appended last, so PETSc's last-wins lets a case
+override the agent only on the keys it names.
 
 Known limitation: an agent that prints `0.0` without solving anything
 satisfies an `upper_bound`. Use `match` when an implausibly small value should
