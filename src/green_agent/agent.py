@@ -913,8 +913,10 @@ class Agent:
                 )
                 m = _PATTERN.search(text_list[0])
                 if not m:
+                    said = " ".join(text_list[0].split())[:300] or "(empty)"
                     raise ValueError(
-                        "Could not parse purple agent response. Probably failed to generate the code."
+                        "Could not parse purple agent response. Probably failed "
+                        f"to generate the code. Purple said: {said}"
                     )
                 try:
                     nsize = int(m.group("nsize").strip())
