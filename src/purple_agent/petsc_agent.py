@@ -194,6 +194,7 @@ class PetscAgentExecutor(AgentExecutor):
         self.temperature = float(self.llm_config.get("temperature"))
         self.api_base_url = self.llm_config.get("api_base_url")
         self.max_tokens = self.llm_config.get("max_tokens")
+        self.timeout = float(self.llm_config.get("timeout") or 300)
 
         # Track conversation history per context for multi-turn interactions
         self.ctx_id_to_messages = {}
@@ -253,7 +254,7 @@ class PetscAgentExecutor(AgentExecutor):
                 'model': self.model,
                 'temperature': self.temperature,
                 'response_format': ProblemResponse,
-                'timeout': 300,
+                'timeout': self.timeout,
             }
             if self.max_tokens:
                 completion_kwargs['max_tokens'] = int(self.max_tokens)

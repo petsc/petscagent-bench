@@ -17,3 +17,4 @@ llm:
   # Pinned explicitly: the server-side default (4096) truncates longer
   # solutions such as Darcy flow and 2D Navier-Stokes, which then fail to parse.
   max_tokens: 32000
+  timeout: 300 # Seconds for one completion call
