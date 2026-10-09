@@ -363,6 +363,9 @@ class Record:
         # such a record used to overwrite the parse error with one of its own,
         # and matching on text alone let those files fall through to the
         # compile branch and blame PETSc for a failure on the purple's side.
+        # Before the empty submission below, which a timeout also looks like.
+        if "budget for" in self.error:
+            return "Purple timeout"
         if not self.submitted_sources or "parse purple agent response" in self.error:
             return "No code produced"
         if not self.compiles:
@@ -387,8 +390,8 @@ class Record:
 # "No code produced" leads because it is a different stage rather than a
 # severity step: it is the one mode where the harness never got as far as the
 # compiler, so it sits outside the ordering the rest of this list encodes.
-FAILURE_CLASSES = ("No code produced", "Compile failure", "Segfault",
-                   "PETSc runtime error", "Nonzero exit", "Other")
+FAILURE_CLASSES = ("Purple timeout", "No code produced", "Compile failure",
+                   "Segfault", "PETSc runtime error", "Nonzero exit", "Other")
 
 
 def _result_files(dirs: Sequence[Path] | None = None) -> list[Path]:

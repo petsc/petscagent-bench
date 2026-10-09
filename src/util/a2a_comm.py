@@ -146,10 +146,9 @@ async def send_message(
     Raises:
         Exception: If the agent is unreachable or returns an error
     """
-    # Create HTTP client with extended timeout for long-running operations.
-    # A streaming agent emits an event per problem, so read budgets the gap
-    # between events rather than the whole run.
-    timeout = httpx.Timeout(connect=30.0, read=3000.0, write=30.0, pool=30.0)
+    # No read budget: an agentic purple goes quiet for an hour at a time, so
+    # the caller imposes the deadline instead.
+    timeout = httpx.Timeout(connect=30.0, read=None, write=30.0, pool=30.0)
     httpx_client = httpx.AsyncClient(timeout=timeout)
     try:
         # Retrieve agent card to get capabilities and validate endpoint

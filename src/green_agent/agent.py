@@ -16,6 +16,7 @@ Key features:
 """
 
 import os
+import asyncio
 import json
 import time
 import re
@@ -523,6 +524,9 @@ class Agent:
             or (Path(replay_path).parent if replay_path
                 else config.get("output_dir") or "output")
         )
+        self.purple_budget_sec = float(
+            config.get("execution", {}).get("purple_budget_sec", 7200)
+        )
         self.replay_variant = None
         self.metrics = {}
         self.green_id = green_id
@@ -885,12 +889,19 @@ class Agent:
                         )
                         br.purple_wall_time_sec = metrics.wall_time_sec
 
-                    purple_agent_response = await send_message(
-                        self.purple_agent_url,
-                        pdesc,
-                        context_id=pname,
-                        on_metrics=record_boundary_metrics,
-                    )
+                    try:
+                        async with asyncio.timeout(self.purple_budget_sec):
+                            purple_agent_response = await send_message(
+                                self.purple_agent_url,
+                                pdesc,
+                                context_id=pname,
+                                on_metrics=record_boundary_metrics,
+                            )
+                    except TimeoutError as exc:
+                        raise TimeoutError(
+                            "Purple agent exceeded its "
+                            f"{self.purple_budget_sec:g}s budget for {pname}"
+                        ) from exc
                 else:
                     print(f"@@@ Green agent: Using replayed response for {pname}")
 
@@ -1103,6 +1114,7 @@ class Agent:
             # Set only in a narrowed rescore's -sN file. A narrowed live run
             # writes no aggregate, so it survives on the reported artifact.
             "problem_filter": self.problems,
+            "purple_budget_sec": self.purple_budget_sec,
             "scored_at": pass_stamp,
             "summary": summary,
             "results": records,

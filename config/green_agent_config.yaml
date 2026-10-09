@@ -85,3 +85,5 @@ execution_time:
 
 execution:
   max_nsize: 64
+  # Wall-clock seconds allowed per problem.
+  purple_budget_sec: 7200

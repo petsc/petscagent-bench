@@ -702,6 +702,7 @@ class WhatALaterPassMayOverwriteTest(unittest.TestCase):
 
         agent = Agent.__new__(Agent)
         agent.purple_id, agent.purple_model, agent.model = "p", "tag", judge
+        agent.purple_budget_sec = 7200.0
         agent.problems = None
         agent.replay_index = {"alpha": {}} if replaying else None
         results = [BenchmarkResult(
@@ -766,6 +767,7 @@ class ANarrowedRunLeavesTheAggregateAloneTest(unittest.TestCase):
 
         agent = Agent.__new__(Agent)
         agent.purple_id, agent.purple_model, agent.model = "p", "tag", judge
+        agent.purple_budget_sec = 7200.0
         agent.problems = problems
         agent.replay_index = None
         # Scores follow the problem, so the halves and the whole compare equal.
@@ -1068,6 +1070,11 @@ class AnEmptySubmissionIsNeverACompileFailureTest(
             with self.subTest(error=error):
                 records = self._load(self._doc(self.a_failure(error, [])))
                 self.assertEqual(records[0].failure_class, "No code produced")
+
+    def test_a_timeout_is_not_charged_to_the_model(self):
+        records = self._load(self._doc(self.a_failure(
+            "Purple agent exceeded its 7200s budget for darcy", [])))
+        self.assertEqual(records[0].failure_class, "Purple timeout")
 
     def test_a_real_compile_failure_is_still_one(self):
         # Code was submitted and the compiler rejected it. Nothing about this
