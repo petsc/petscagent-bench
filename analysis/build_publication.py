@@ -131,17 +131,6 @@ def _overview(records: list[Record]) -> list[dict]:
         run_mean = sum(float(r.ran) for r in mine) / len(mine)
 
         n_judge_passes = max((len(r.pass_scores) for r in mine), default=1)
-        pass_means = []
-        for pass_i in range(n_judge_passes):
-            values = [r.pass_scores[pass_i] for r in mine if pass_i < len(r.pass_scores)]
-            if values:
-                pass_means.append(sum(values) / len(values))
-        judge_sd = None
-        if len(pass_means) >= 2:
-            pass_mean = sum(pass_means) / len(pass_means)
-            judge_sd = math.sqrt(
-                sum((value - pass_mean) ** 2 for value in pass_means) / (len(pass_means) - 1)
-            )
 
         def mean_present(values):
             present = [float(value) for value in values if value is not None]
@@ -154,6 +143,18 @@ def _overview(records: list[Record]) -> list[dict]:
             center = sum(present) / len(present)
             return math.sqrt(sum((value - center) ** 2 for value in present)
                              / (len(present) - 1))
+
+        def across_passes(value_of):
+            # Pooling problems and passes would report between-problem spread
+            # whenever there is only one pass.
+            means = []
+            for pass_i in range(n_judge_passes):
+                means.append(mean_present([value_of(r, pass_i) for r in mine]))
+            return sample_sd(means)
+
+        judge_sd = across_passes(
+            lambda r, i: r.pass_scores[i] if i < len(r.pass_scores) else None
+        )
 
         rows.append({
             "variant_id": variant.variant_id,
@@ -174,11 +175,10 @@ def _overview(records: list[Record]) -> list[dict]:
                 for category in CATEGORY_WEIGHTS
             },
             **{
-                f"category_{category}_sd": sample_sd([
-                    pass_categories.get(category)
-                    for r in mine
-                    for pass_categories in r.pass_category_scores
-                ])
+                f"category_{category}_sd": across_passes(
+                    lambda r, i, c=category: r.pass_category_scores[i].get(c)
+                    if i < len(r.pass_category_scores) else None
+                )
                 for category in CATEGORY_WEIGHTS
             },
             "cost_usd_per_run": mean_present([r.agent_cost_usd for r in mine]),
@@ -318,7 +318,8 @@ def _render_summary_table(path: Path, rows: list[dict]) -> None:
         sd = row.get(f"category_{category}_sd")
         if mean is None:
             return "—"
-        return f"{mean:.1f} ± {sd:.1f}" if sd is not None else f"{mean:.1f}"
+        return (f"{mean:.1f} ± {sd:.1f}"
+                if show_judge_sd and sd is not None else f"{mean:.1f}")
 
     effectiveness = []
     resources = []
