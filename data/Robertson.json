@@ -1,17 +1,16 @@
 {
   "problem_name": "Robertson_ODE",
   "problem_id": "1",
-  "problem_description": "Implement the Robertson ODE problem in PETSc as a complete, compilable C file. The system of ordinary differential equations is:\n\n\\frac{dy_1}{dt} = -0.04 y_1 + 10^4 y_2 y_3 \n\\frac{dy_2}{dt} = 0.04 y_1 - 10^4 y_2 y_3 - 3 \\cdot 10^7 y_2^2 \n\\frac{dy_3}{dt} = 3 \\cdot 10^7 y_2^2\n\nInitial conditions at t=0: y_1=1, y_2=0, y_3=0.\n\nThe implementation must:\n1. Include all necessary PETSc headers (e.g., petscts.h).\n2. Have a main function that:\n   - Initializes PETSc.\n   - Sets up the TS (Time Stepper) solver and use the CN method.\n   - Solves the ODE system from t=0 to t=100 with less than 1000 time steps.\n   - Prints the final solution with VecView().\n   - Finalizes PETSc.\n\nSolver tolerances must be carefully chosen when using TSSetTolerances().",
+  "problem_description": "Implement the Robertson ODE problem in PETSc as a C file. The system of ordinary differential equations is:\n\n\\frac{dy_1}{dt} = -0.04 y_1 + 10^4 y_2 y_3 \n\\frac{dy_2}{dt} = 0.04 y_1 - 10^4 y_2 y_3 - 3 \\cdot 10^7 y_2^2 \n\\frac{dy_3}{dt} = 3 \\cdot 10^7 y_2^2\n\nInitial conditions at t=0: y_1=1, y_2=0, y_3=0.\n\nThe implementation must: Solve the ODE system from t=0 to t=100 with less than 1000 time steps. Print the final solution with VecView().\n\n",
   "test_cases": [
     {
-      "args": "-ts_type cn -ts_time_step 1e-7 -ts_adapt_type basic -ts_exact_final_time matchstep",
       "expected_output": [
         0.616721,
         5.61451e-06,
         0.383274
       ],
       "comparison": "match",
-      "tolerance": 1.0e-2
+      "tolerance": 0.01
     }
   ]
 }
