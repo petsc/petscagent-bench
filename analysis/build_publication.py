@@ -28,6 +28,7 @@ from typing import Callable, Iterable
 from load_results import (
     CATEGORY_WEIGHTS,
     REPO_ROOT,
+    SOURCE_DIRS,
     TIER_ORDER,
     Record,
     Variant,
@@ -690,11 +691,24 @@ def _build_slice(records: list[Record], out: Path, judge: str, pooled: bool) -> 
     return manifest
 
 
+def _check_destination(dirs: list[Path] | None, destination: Path) -> None:
+    # `build` swaps the bundle in by replacing `destination` outright, which
+    # would delete the very results being read.
+    for directory in dirs or SOURCE_DIRS:
+        source = Path(directory).resolve()
+        if source == destination or destination in source.parents:
+            raise SystemExit(
+                f"--out {destination} would replace the result directory {source}. "
+                "Build the bundle somewhere outside the results."
+            )
+
+
 def build(dirs: list[Path] | None, destination: Path, include_pooled: bool = False) -> list[dict]:
     records = load_records(dirs, with_sources=False)
     if not records:
         raise SystemExit("No complete, provenanced result records found.")
     destination = destination.resolve()
+    _check_destination(dirs, destination)
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary = Path(tempfile.mkdtemp(prefix=f".{destination.name}-", dir=destination.parent))
     manifests = []
