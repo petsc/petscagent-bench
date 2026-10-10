@@ -37,11 +37,11 @@ class PublicationExportTest(unittest.TestCase):
                 columns = set(next(csv.DictReader(handle)).keys())
             self.assertTrue({
                 "category_correctness", "category_performance", "category_code_quality",
-                "category_algorithm", "category_petsc", "cost_usd_per_run",
+                "category_algorithm", "category_petsc", "cost_usd_total",
                 "category_correctness_sd", "category_performance_sd",
                 "category_code_quality_sd", "category_algorithm_sd", "category_petsc_sd",
-                "total_tokens_per_run", "model_calls_per_run", "tool_calls_per_run",
-                "peak_context_tokens", "execution_time_sec",
+                "total_tokens_total", "model_calls_total", "tool_calls_total",
+                "peak_context_tokens", "execution_time_sec_total",
             }.issubset(columns))
             with (manifests[0].parent / "table_evaluators.csv").open(newline="") as handle:
                 evaluator_rows = list(csv.DictReader(handle))

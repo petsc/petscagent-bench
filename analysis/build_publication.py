@@ -136,6 +136,15 @@ def _overview(records: list[Record]) -> list[dict]:
             present = [float(value) for value in values if value is not None]
             return sum(present) / len(present) if present else None
 
+        def total_present(values):
+            # A partial total is an undercount that reads as a real number.
+            values = list(values)
+            return None if any(v is None for v in values) else sum(values)
+
+        def max_present(values):
+            present = [float(value) for value in values if value is not None]
+            return max(present) if present else None
+
         def sample_sd(values):
             present = [float(value) for value in values if value is not None]
             if len(present) < 2:
@@ -181,16 +190,17 @@ def _overview(records: list[Record]) -> list[dict]:
                 )
                 for category in CATEGORY_WEIGHTS
             },
-            "cost_usd_per_run": mean_present([r.agent_cost_usd for r in mine]),
-            "prompt_tokens_per_run": mean_present([r.prompt_tokens for r in mine]),
-            "completion_tokens_per_run": mean_present([r.completion_tokens for r in mine]),
-            "cached_tokens_per_run": mean_present([r.cached_tokens for r in mine]),
-            "total_tokens_per_run": mean_present([r.total_tokens for r in mine]),
-            "model_calls_per_run": mean_present([r.model_calls for r in mine]),
-            "tool_calls_per_run": mean_present([r.tool_calls for r in mine]),
-            "peak_context_tokens": mean_present([r.peak_context_tokens for r in mine]),
-            "execution_time_sec": mean_present([r.execution_time_sec for r in mine]),
-            "agent_wall_time_sec": mean_present([r.agent_wall_time_sec for r in mine]),
+            "cost_usd_total": total_present([r.agent_cost_usd for r in mine]),
+            "prompt_tokens_total": total_present([r.prompt_tokens for r in mine]),
+            "completion_tokens_total": total_present([r.completion_tokens for r in mine]),
+            "cached_tokens_total": total_present([r.cached_tokens for r in mine]),
+            "total_tokens_total": total_present([r.total_tokens for r in mine]),
+            "model_calls_total": total_present([r.model_calls for r in mine]),
+            "tool_calls_total": total_present([r.tool_calls for r in mine]),
+            # A peak does not add up across runs, so carry the worst one.
+            "peak_context_tokens": max_present([r.peak_context_tokens for r in mine]),
+            "execution_time_sec_total": total_present([r.execution_time_sec for r in mine]),
+            "agent_wall_time_sec_total": total_present([r.agent_wall_time_sec for r in mine]),
             "all_replayed": all(r.response_replayed for r in mine),
         })
 
@@ -337,14 +347,16 @@ def _render_summary_table(path: Path, rows: list[dict]) -> None:
             score_with_sd(row, "petsc"),
         ])
         cached_share = None
-        if row.get("prompt_tokens_per_run"):
-            cached_share = 100 * row["cached_tokens_per_run"] / row["prompt_tokens_per_run"]
+        # The two come from separate telemetry fields and go missing apart.
+        if row.get("prompt_tokens_total") and row.get("cached_tokens_total") is not None:
+            cached_share = 100 * row["cached_tokens_total"] / row["prompt_tokens_total"]
         resources.append([
-            row["variant"], number(row.get("cost_usd_per_run"), 2),
-            number(row.get("total_tokens_per_run"), 2, 1_000_000),
+            row["variant"], str(row["n_problem_runs"]),
+            number(row.get("cost_usd_total"), 2),
+            number(row.get("total_tokens_total"), 2, 1_000_000),
             number(cached_share, 1),
-            number(row.get("model_calls_per_run"), 0),
-            number(row.get("tool_calls_per_run"), 0),
+            number(row.get("model_calls_total"), 0),
+            number(row.get("tool_calls_total"), 0),
             number(row.get("peak_context_tokens"), 1, 1_000),
         ])
 
@@ -385,15 +397,17 @@ def _render_summary_table(path: Path, rows: list[dict]) -> None:
     for column, color in enumerate(metric_header_colors):
         table[(0, column)].set_facecolor(color)
 
-    axes[1].set_title("Resource use per problem-run", loc="left", fontsize=7,
-                      fontweight="bold", pad=5)
+    axes[1].set_title(
+        "Resource use, summed over each configuration's problem-runs"
+        " (peak context is the worst single run)",
+        loc="left", fontsize=7, fontweight="bold", pad=5)
     resource_table = axes[1].table(
         cellText=resources,
-        colLabels=["Configuration", "Cost\n(USD)", "Tokens\n(M)", "Cached\n(%)",
-                   "Model\ncalls", "Tool\ncalls", "Peak ctx.\n(k)"],
+        colLabels=["Configuration", "Problem-\nruns", "Cost\n(USD)", "Tokens\n(M)",
+                   "Cached\n(%)", "Model\ncalls", "Tool\ncalls", "Peak ctx.\n(k)"],
         cellLoc="right",
         colLoc="right",
-        colWidths=[0.32, 0.12, 0.12, 0.12, 0.11, 0.11, 0.10],
+        colWidths=[0.28, 0.08, 0.12, 0.12, 0.11, 0.10, 0.10, 0.09],
         edges="closed",
         loc="center",
     )
