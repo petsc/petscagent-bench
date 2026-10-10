@@ -693,7 +693,7 @@ class Agent:
         try:
             t0 = time.time()
             br.stdout = await self.mcp_client.run_executable(
-                executable=pname, nsize=nsize, args=cli_args
+                executable=pname, nsize=nsize, args=cli_args, timeout=10000000
             )
             br.execution_time_sec = time.time() - t0
             br.actual_nsize = nsize
@@ -703,7 +703,7 @@ class Agent:
             if valgrind and self.config.get("memory_safety", {}).get("use_valgrind", False):
                 try:
                     await self.mcp_client.run_executable(
-                        executable=pname, nsize=nsize, args=cli_args, valgrind=True
+                        executable=pname, nsize=nsize, args=cli_args, valgrind=True, timeout=10000000
                     )
                     response = getattr(self.mcp_client, "response", None)
                     br.valgrind_output = getattr(response, "stderr", None)
