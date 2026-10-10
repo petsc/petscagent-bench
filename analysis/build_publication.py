@@ -363,18 +363,32 @@ def _render_summary_table(path: Path, rows: list[dict]) -> None:
     fig_height = max(3.0, 0.58 * (len(rows) + 1) + 1.15)
     fig, axes = plt.subplots(2, 1, figsize=(7.1, fig_height))
     fig.subplots_adjust(left=0.025, right=0.985, top=0.87, bottom=0.14, hspace=0.62)
-    title = (f"{rows[0]['problems'][0]} — one fixed submission, "
-             f"{rows[0]['n_judge_passes']} judge passes per configuration"
-             if rows[0]["n_problems"] == 1 and show_judge_sd
-             else f"{rows[0]['problems'][0]} — one problem-run per configuration"
-             if rows[0]["n_problems"] == 1
-             else f"Benchmark summary — {rows[0]['n_problems']} problems per configuration")
+    def shared(key):
+        # Configurations can differ in coverage, so row 0 does not speak
+        # for the table.
+        values = [row[key] for row in rows]
+        return values[0] if all(value == values[0] for value in values) else None
+
+    n_problems = shared("n_problems")
+    n_passes = shared("n_judge_passes")
+    problems = shared("problems")
+    if n_problems == 1 and problems and show_judge_sd:
+        passes = f"{n_passes} judge passes" if n_passes else "repeated judge passes"
+        title = f"{problems[0]} — one fixed submission, {passes} per configuration"
+    elif n_problems == 1 and problems:
+        title = f"{problems[0]} — one problem-run per configuration"
+    elif n_problems is not None:
+        title = f"Benchmark summary — {n_problems} problems per configuration"
+    else:
+        title = "Benchmark summary — problem coverage differs by configuration"
     fig.suptitle(title, fontsize=8, fontweight="bold", x=0.025, ha="left")
     for ax in axes:
         ax.set_axis_off()
 
-    pass_note = (f"mean across {rows[0]['n_judge_passes']} judge passes; "
-                 if show_judge_sd else "")
+    pass_note = ""
+    if show_judge_sd:
+        pass_note = (f"mean across {n_passes} judge passes; " if n_passes
+                     else "mean across judge passes; ")
     axes[0].set_title(f"Effectiveness ({pass_note}0–100; higher is better)", loc="left", fontsize=7,
                       fontweight="bold", pad=5)
     table = axes[0].table(
