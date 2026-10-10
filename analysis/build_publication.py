@@ -32,19 +32,12 @@ from load_results import (
     TIER_ORDER,
     Record,
     Variant,
-    bootstrap_ci,
-    correlation,
-    find_contrasts,
     label_for,
     load_records,
-    paired_bootstrap,
 )
 
-MIN_PAIRED_PROBLEMS = 3
+MIN_FIGURE_PROBLEMS = 3
 DEFAULT_OUT = REPO_ROOT / "publication"
-BLUE = "#3978A8"
-ORANGE = "#D98032"
-GREY = "#D9D9D9"
 NAVY = "#24445F"
 PALE_BLUE = "#E8F1F7"
 PALE_TEAL = "#DDEFEA"
@@ -126,14 +119,16 @@ def _save_figure(fig, stem: Path) -> None:
     fig.savefig(stem.with_suffix(".pdf"), bbox_inches="tight")
 
 
-def _overview(records: list[Record], out: Path, render: bool = True) -> list[dict]:
+def _overview(records: list[Record]) -> list[dict]:
     variants = _variant_order(records)
     labels = _short_labels(variants)
     rows = []
     for variant, label in zip(variants, labels):
         mine = [r for r in records if r.variant == variant]
-        mean, lo, hi = bootstrap_ci(mine, lambda r: r.composite_score)
-        run_mean, run_lo, run_hi = bootstrap_ci(mine, lambda r: float(r.ran))
+        # The problem set is curated, not sampled, so this is a measurement
+        # and not an estimate carrying an interval.
+        mean = sum(r.composite_score for r in mine) / len(mine)
+        run_mean = sum(float(r.ran) for r in mine) / len(mine)
 
         n_judge_passes = max((len(r.pass_scores) for r in mine), default=1)
         pass_means = []
@@ -165,11 +160,7 @@ def _overview(records: list[Record], out: Path, render: bool = True) -> list[dic
             "variant": variant.label,
             "plot_label": label,
             "mean_score": mean,
-            "score_ci_low": lo,
-            "score_ci_high": hi,
             "execution_rate": run_mean,
-            "execution_ci_low": run_lo,
-            "execution_ci_high": run_hi,
             "gold_rate": sum(r.tier == "GOLD" for r in mine) / len(mine),
             "n_problems": len({r.problem for r in mine}),
             "n_problem_runs": len(mine),
@@ -203,79 +194,6 @@ def _overview(records: list[Record], out: Path, render: bool = True) -> list[dic
             "all_replayed": all(r.response_replayed for r in mine),
         })
 
-    if not render:
-        return rows
-    plt = _mpl()
-    height = max(2.2, 0.34 * len(rows) + 0.8)
-    fig, ax = plt.subplots(figsize=(3.5, height), constrained_layout=True)
-    y = list(range(len(rows)))
-    means = [r["mean_score"] for r in rows]
-    errors = [[r["mean_score"] - r["score_ci_low"] for r in rows],
-              [r["score_ci_high"] - r["mean_score"] for r in rows]]
-    ax.errorbar(means, y, xerr=errors, fmt="o", color=BLUE, ecolor=BLUE,
-                markersize=4, capsize=2, linewidth=1)
-    ax.set_yticks(y, [f"{row['plot_label']} (n={row['n_problems']})" for row in rows])
-    ax.invert_yaxis()
-    ax.set_xlim(0, 100)
-    ax.set_xlabel("Composite score (problem-level mean and 95% bootstrap CI)")
-    ax.grid(axis="x", color=GREY, linewidth=0.5)
-    _save_figure(fig, out / "figure_overview")
-    plt.close(fig)
-    return rows
-
-
-def _contrasts(records: list[Record], out: Path) -> list[dict]:
-    variants = _variant_order(records)
-    compact_labels = dict(zip((v.variant_id for v in variants), _short_labels(variants)))
-    rows = []
-    for contrast in find_contrasts(variants):
-        test = [r for r in records if r.variant == contrast.test]
-        base = [r for r in records if r.variant == contrast.base]
-        mean, lo, hi, n = paired_bootstrap(test, base, lambda r: r.composite_score)
-        rows.append({
-            "factor": contrast.factor,
-            "comparison": contrast.label,
-            "arms": contrast.arms,
-            "test_variant_id": contrast.test.variant_id,
-            "base_variant_id": contrast.base.variant_id,
-            "held_fixed": contrast.held,
-            "mean_difference": mean,
-            "ci_low": lo,
-            "ci_high": hi,
-            "n_shared_problems": n,
-            "correlation": correlation(test, base, lambda r: r.composite_score),
-            "withheld": n < MIN_PAIRED_PROBLEMS,
-        })
-
-    shown = [r for r in rows if not r["withheld"]]
-    if not shown:
-        return rows
-    plt = _mpl()
-    height = max(2.0, 0.42 * max(1, len(shown)) + 0.8)
-    fig, ax = plt.subplots(figsize=(3.5, height), constrained_layout=True)
-    ax.axvline(0, color="#777777", linewidth=0.7)
-    y = list(range(len(shown)))
-    means = [r["mean_difference"] for r in shown]
-    errors = [[r["mean_difference"] - r["ci_low"] for r in shown],
-              [r["ci_high"] - r["mean_difference"] for r in shown]]
-    colors = [BLUE if value >= 0 else ORANGE for value in means]
-    for yi, mean, err, color in zip(y, means, zip(*errors), colors):
-        ax.errorbar(mean, yi, xerr=[[err[0]], [err[1]]], fmt="o", color=color,
-                    ecolor=color, markersize=4, capsize=2, linewidth=1)
-    plot_labels = []
-    for row in shown:
-        # The full arm names remain in the source table.  Use the compact,
-        # unique configuration labels on a single-column plotting canvas.
-        plot_labels.append(
-            f"{compact_labels[row['test_variant_id']]} vs "
-            f"{compact_labels[row['base_variant_id']]} (n={row['n_shared_problems']})"
-        )
-    ax.set_yticks(y, plot_labels)
-    ax.invert_yaxis()
-    ax.set_xlabel("Paired composite-score difference (95% bootstrap CI)")
-    ax.grid(axis="x", color=GREY, linewidth=0.5)
-    _save_figure(fig, out / "figure_contrasts")
-    plt.close(fig)
     return rows
 
 
@@ -390,7 +308,6 @@ def _style_table(table, header_color=NAVY, stripe_color="#F4F7F9") -> None:
 
 def _render_summary_table(path: Path, rows: list[dict]) -> None:
     plt = _mpl()
-    show_interval = all(row["n_problems"] >= MIN_PAIRED_PROBLEMS for row in rows)
     show_judge_sd = all(row["n_judge_passes"] >= 2 for row in rows)
 
     def number(value, digits=1, scale=1.0):
@@ -408,9 +325,6 @@ def _render_summary_table(path: Path, rows: list[dict]) -> None:
     for row in rows:
         if show_judge_sd:
             score = f"{row['mean_score']:.1f} ± {row['judge_score_sd']:.1f}"
-        elif show_interval:
-            score = (f"{row['mean_score']:.1f} "
-                     f"[{row['score_ci_low']:.1f}, {row['score_ci_high']:.1f}]")
         else:
             score = f"{row['mean_score']:.1f}"
         effectiveness.append([
@@ -452,8 +366,7 @@ def _render_summary_table(path: Path, rows: list[dict]) -> None:
                       fontweight="bold", pad=5)
     table = axes[0].table(
         cellText=effectiveness,
-        colLabels=["Configuration", "Overall\nmean ± SD" if show_judge_sd
-                   else "Overall (95% CI)" if show_interval else "Overall",
+        colLabels=["Configuration", "Overall\nmean ± SD" if show_judge_sd else "Overall",
                    "Correctness", "Performance", "Code quality", "Algorithm", "PETSc"],
         cellLoc="right",
         colLoc="right",
@@ -658,15 +571,13 @@ def _safe_name(judge: str) -> str:
 def _build_slice(records: list[Record], out: Path, judge: str, pooled: bool) -> dict:
     out.mkdir(parents=True)
     n_problems = len({r.problem for r in records})
-    enough_problems = n_problems >= MIN_PAIRED_PROBLEMS
-    summary = _overview(records, out, render=enough_problems)
+    enough_problems = n_problems >= MIN_FIGURE_PROBLEMS
+    summary = _overview(records)
     evaluators = _evaluator_rows(records)
-    contrasts = _contrasts(records, out)
     problems = _matrix(records, out, render=enough_problems)
     _write_csv(out / "table_summary.csv", summary)
     _write_csv(out / "table_evaluators.csv", evaluators)
     _write_csv(out / "table_problems.csv", problems)
-    _write_csv(out / "source_data_contrasts.csv", contrasts)
     _write_csv(out / "source_data_problem_runs.csv", _source_rows(records))
     _render_summary_table(out / "table_summary.pdf", summary)
     _render_evaluator_table(out / "table_evaluators.pdf", evaluators)
@@ -681,8 +592,11 @@ def _build_slice(records: list[Record], out: Path, judge: str, pooled: bool) -> 
         "problems": sorted({r.problem for r in records}),
         "variants": [v.variant_id for v in _variant_order(records)],
         "source_files": sorted({r.source_file for r in records}),
-        "minimum_shared_problems_for_contrast": MIN_PAIRED_PROBLEMS,
-        "uncertainty": "95% percentile bootstrap CI, resampling problems",
+        "uncertainty": (
+            "None reported. The problem set is fixed and curated, so a score over it is "
+            "a measurement, not an estimate from a sample. Run-to-run spread needs "
+            "repetitions; judge spread is reported as judge_score_sd once a run is rescored."
+        ),
         "figure_policy": (
             "Figures emitted only with at least 3 observed problems; otherwise tables only."
         ),

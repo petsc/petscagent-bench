@@ -29,7 +29,7 @@ class PublicationExportTest(unittest.TestCase):
             manifests = sorted(out.glob("*/included_results.json"))
             self.assertTrue(manifests)
             before = json.loads(manifests[0].read_text())
-            self.assertTrue((manifests[0].parent / "figure_overview.pdf").is_file())
+            self.assertTrue((manifests[0].parent / "figure_problem_matrix.pdf").is_file())
             self.assertTrue((manifests[0].parent / "table_summary.pdf").is_file())
             self.assertTrue((manifests[0].parent / "table_evaluators.pdf").is_file())
             self.assertTrue((manifests[0].parent / "table_problems.pdf").is_file())
