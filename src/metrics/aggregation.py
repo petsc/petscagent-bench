@@ -208,7 +208,13 @@ class MetricsAggregator:
             item = {
                 'name': result.evaluator_name,
                 'passed': result.passed,
-                'score': result.quality_score or result.normalized_score or result.raw_value,
+                'score': (
+                    result.quality_score
+                    if result.quality_score is not None
+                    else result.normalized_score
+                    if result.normalized_score is not None
+                    else result.raw_value
+                ),
                 'confidence': result.confidence,
                 'feedback': result.feedback,
                 'method': result.evaluation_method,

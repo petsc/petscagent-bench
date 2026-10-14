@@ -1275,7 +1275,7 @@ class Agent:
                     'type': r.evaluator_type.value,
                     'method': r.evaluation_method,
                     'passed': r.passed,
-                    'score': r.quality_score or r.normalized_score,
+                    'score': r.quality_score if r.quality_score is not None else r.normalized_score,
                     'raw_value': r.raw_value,
                     'confidence': r.confidence,
                     'feedback': r.feedback,
